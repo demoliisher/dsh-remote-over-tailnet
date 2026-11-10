@@ -1,0 +1,20 @@
+# 研究沙盘：逆向物料、一次性验证脚本、样例产物，不入库
+.scratch/
+
+# 依赖与构建产物
+node_modules/
+dist/
+build/
+*.log
+*.tgz
+
+# 本地配置与凭据
+.env
+.env.*
+!.env.example
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
