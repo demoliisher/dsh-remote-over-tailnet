@@ -96,7 +96,6 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     const [relayAccountDraft, setRelayAccountDraft] = React.useState('')
     const [relayPasswordDraft, setRelayPasswordDraft] = React.useState('')
     const [relaySecretVisible, setRelaySecretVisible] = React.useState(false)
-    const [relayCopied, setRelayCopied] = React.useState('')
     const [relaySaved, setRelaySaved] = React.useState(false)
     const pageRef = React.useRef<HTMLElement | null>(null)
     const [error, setError] = React.useState<string | undefined>(undefined)
@@ -170,16 +169,6 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     const show = async (): Promise<void> => {
       setOpen(true)
       await refreshRemote()
-    }
-
-    const copyRelayValue = async (value: string): Promise<void> => {
-      try {
-        await navigator.clipboard.writeText(value)
-      } catch {
-        return
-      }
-      setRelayCopied(value)
-      window.setTimeout(() => setRelayCopied(current => (current === value ? '' : current)), 2000)
     }
 
     const relayDraftUnchanged = relayCredentials !== undefined
@@ -267,14 +256,30 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
         : tailnet.phase === 'error'
           ? ' isError'
           : ''
-    const relayAddressBar = serviceAddress === undefined ? null : React.createElement('p', { className: 'dshRemoteRelayAddress' },
-      React.createElement('span', { className: 'dshRemoteRelayAddressLabel' }, t('tailnetServerAddress')),
-      React.createElement('a', { href: serviceAddress, target: '_blank', rel: 'noreferrer' }, serviceAddress),
-      React.createElement('button', {
-        type: 'button',
-        className: 'dshRemoteRelayCopy',
-        onClick: () => void copyRelayValue(serviceAddress),
-      }, t(relayCopied === serviceAddress ? 'tailnetCopied' : 'tailnetCopy')))
+    const relayAddressField = serviceAddress === undefined ? null : React.createElement('label', { className: 'dshRemoteRelayAddressField' },
+      React.createElement('span', { className: 'dshRemoteRelayFieldLabel' }, t('tailnetServerAddress')),
+      React.createElement('div', { className: 'dshRemoteRelayAddressBox' },
+        React.createElement('a', {
+          href: serviceAddress,
+          target: '_blank',
+          rel: 'noreferrer',
+          title: serviceAddress,
+        }, serviceAddress)))
+    // 眼睛图标只切换密码的可见性，复制通过选中文本框完成。
+    const eyeIcon = (revealed: boolean): unknown => React.createElement('svg', {
+      viewBox: '0 0 24 24',
+      width: 16,
+      height: 16,
+      fill: 'none',
+      stroke: 'currentColor',
+      strokeWidth: 1.8,
+      strokeLinecap: 'round',
+      strokeLinejoin: 'round',
+      'aria-hidden': true,
+    },
+      React.createElement('path', { d: 'M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z' }),
+      React.createElement('circle', { cx: 12, cy: 12, r: 3 }),
+      revealed ? React.createElement('path', { d: 'M4 4l16 16' }) : null)
     // 中继连接信息：地址、账号、密码放在一起，方便直接抄给其他客户端。
     const relayAccessPanel = React.createElement('section', {
       className: 'dshRemoteRelayAccess',
@@ -288,14 +293,14 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
             'aria-label': t('tailnetStatus'),
           }, relayPhaseLabel)),
         React.createElement('p', null, t('tailnetAccessHint'))),
-      relayAddressBar,
       tailnet?.error === undefined ? null : React.createElement('p', { className: 'dshRemoteError', role: 'alert' },
         tailnet.error.message,
         tailnet.error.actionUrl === undefined ? null : React.createElement('a', {
           href: tailnet.error.actionUrl, target: '_blank', rel: 'noreferrer',
         }, t('openInBrowser'))),
       React.createElement('div', { className: 'dshRemoteRelayFields' },
-        React.createElement('label', null, t('tailnetAccount'),
+        React.createElement('label', null,
+          React.createElement('span', { className: 'dshRemoteRelayFieldLabel' }, t('tailnetAccount')),
           React.createElement('input', {
             type: 'email',
             value: relayAccountDraft,
@@ -303,32 +308,30 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
             onChange: (event: Event) => setRelayAccountDraft((event.target as HTMLInputElement).value),
           })),
         React.createElement('label', null,
-          React.createElement('div', { className: 'dshRemoteRelayFieldHead' },
-            React.createElement('span', null, t('tailnetPassword')),
-            React.createElement('span', { className: 'dshRemoteRelaySecretActions' },
-              React.createElement('button', {
-                type: 'button',
-                className: 'dshRemoteRelayCopy',
-                onClick: () => setRelaySecretVisible(visible => !visible),
-              }, t(relaySecretVisible ? 'tailnetHideSecret' : 'tailnetShowSecret')),
-              React.createElement('button', {
-                type: 'button',
-                className: 'dshRemoteRelayCopy',
-                onClick: () => void copyRelayValue(relayPasswordDraft),
-              }, t(relayCopied === relayPasswordDraft ? 'tailnetCopied' : 'tailnetCopy')))),
-          React.createElement('input', {
-            type: relaySecretVisible ? 'text' : 'password',
-            value: relayPasswordDraft,
-            autoComplete: 'current-password',
-            onChange: (event: Event) => setRelayPasswordDraft((event.target as HTMLInputElement).value),
-          }))),
-      React.createElement('div', { className: 'dshRemoteRelayActions' },
-        relaySaved ? React.createElement('span', { className: 'dshRemoteRelaySaved' }, t('tailnetCredentialsSaved')) : null,
-        React.createElement('button', {
-          type: 'button',
-          disabled: busy || relayAccountDraft.trim() === '' || relayPasswordDraft === '' || relayDraftUnchanged,
-          onClick: () => void saveRelayCredentials(),
-        }, t(busy ? 'saving' : 'tailnetSaveCredentials'))))
+          React.createElement('span', { className: 'dshRemoteRelayFieldLabel' }, t('tailnetPassword')),
+          React.createElement('div', { className: 'dshRemoteRelaySecretField' },
+            React.createElement('input', {
+              type: relaySecretVisible ? 'text' : 'password',
+              value: relayPasswordDraft,
+              autoComplete: 'current-password',
+              onChange: (event: Event) => setRelayPasswordDraft((event.target as HTMLInputElement).value),
+            }),
+            React.createElement('button', {
+              type: 'button',
+              className: 'dshRemoteRelayEye',
+              title: t(relaySecretVisible ? 'tailnetHideSecret' : 'tailnetShowSecret'),
+              'aria-label': t(relaySecretVisible ? 'tailnetHideSecret' : 'tailnetShowSecret'),
+              onClick: () => setRelaySecretVisible(visible => !visible),
+            }, eyeIcon(relaySecretVisible))))),
+      React.createElement('div', { className: 'dshRemoteRelayFooterRow' },
+        relayAddressField,
+        React.createElement('div', { className: 'dshRemoteRelayActions' },
+          relaySaved ? React.createElement('span', { className: 'dshRemoteRelaySaved' }, t('tailnetCredentialsSaved')) : null,
+          React.createElement('button', {
+            type: 'button',
+            disabled: busy || relayAccountDraft.trim() === '' || relayPasswordDraft === '' || relayDraftUnchanged,
+            onClick: () => void saveRelayCredentials(),
+          }, t(busy ? 'saving' : 'tailnetSaveCredentials')))))
 
     const host = status?.host
     const hostStateLabel = host === undefined
