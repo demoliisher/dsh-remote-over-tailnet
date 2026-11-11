@@ -277,6 +277,10 @@ export const en = {
   tailnetRefresh: 'Re-check',
   tailnetLogPath: 'Relay log',
   tailnetPending: 'Waiting',
+  tailnetAccessTitle: 'DSH Go connection details',
+  tailnetAccessHint: 'The phone and this desktop share these relay credentials. Edits are saved to the relay and sign this app in again.',
+  tailnetSaveCredentials: 'Save and sign in again',
+  tailnetCredentialsSaved: 'Saved',
 } as const
 
 export const zh: Record<keyof typeof en, string> = {
@@ -555,6 +559,10 @@ export const zh: Record<keyof typeof en, string> = {
   tailnetRefresh: '重新检测',
   tailnetLogPath: '中继日志',
   tailnetPending: '等待中',
+  tailnetAccessTitle: 'DSH Go 连接信息',
+  tailnetAccessHint: '手机与桌面端共用这组中继凭据。修改会写回中继，并让本端重新登录。',
+  tailnetSaveCredentials: '保存并重新登录',
+  tailnetCredentialsSaved: '已保存',
 }
 
 export type LocaleKey = keyof typeof en

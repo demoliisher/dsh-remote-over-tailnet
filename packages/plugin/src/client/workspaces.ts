@@ -161,8 +161,14 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     const [password, setPassword] = React.useState('')
     const [loginServerUrl, setLoginServerUrl] = React.useState('http://127.0.0.1:8080')
     const [loginSecretVisible, setLoginSecretVisible] = React.useState(false)
-    // 本机中继的账号密码：打开登录框时预填，改成别的值时写回中继并让 Host 重新授权。
+    // 本机中继的账号密码：打开面板时读取，登录表单与「主机」页共用这组值。
     const [relayCredentials, setRelayCredentials] = React.useState<TailnetCredentialsView | undefined>(undefined)
+    const [relayAccountDraft, setRelayAccountDraft] = React.useState('')
+    const [relayPasswordDraft, setRelayPasswordDraft] = React.useState('')
+    const [relaySecretVisible, setRelaySecretVisible] = React.useState(false)
+    const [relayCopied, setRelayCopied] = React.useState('')
+    const [relaySaved, setRelaySaved] = React.useState(false)
+    const autoSignInAttempted = React.useRef(false)
     const [hostEmail, setHostEmail] = React.useState('')
     const [hostPassword, setHostPassword] = React.useState('')
     const [hostRegistrationCode, setHostRegistrationCode] = React.useState('')
@@ -239,21 +245,67 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
       }
     }, [status?.serverUrl])
 
-    // 打开登录框时预填本机中继账号密码。取不到说明当前没有本地中继（客户端模式或
-    // Tailscale 组网关闭），保留空输入由用户手填。
+    const copyRelayValue = async (value: string): Promise<void> => {
+      try { await navigator.clipboard.writeText(value) } catch { return }
+      setRelayCopied(value)
+      window.setTimeout(() => setRelayCopied(current => current === value ? '' : current), 2000)
+    }
+
+    // Tailscale 组网可用时，用本机中继账号直接完成客户端登录，不再要求手填。
+    // 登录只走 client.account.login，不改插件角色，避免重启后中继被当成客户端停掉。
+    const autoSignIn = async (view: RemoteStatus | undefined): Promise<boolean> => {
+      if (view?.tailnet?.phase !== 'ready' || view.tailnet.publicUrl === undefined) return false
+      try {
+        const credentials = await props.control<TailnetCredentialsView | null>('tailnet.credentials').catch(() => null)
+        if (credentials === null) return false
+        setRelayCredentials(credentials)
+        setEmail(credentials.account)
+        setPassword(credentials.password)
+        await props.control('client.account.login', { email: credentials.account, password: credentials.password })
+        setDevices(await props.control<RemoteDevice[]>('devices'))
+        setStatus(await props.control<RemoteStatus>('status'))
+        setNeedsAuthorization(false)
+        setPassword('')
+        return true
+      } catch (reason) {
+        setError(connectionErrorMessageFor(reason, t))
+        return false
+      }
+    }
+
+    // 取本机中继账号：登录表单与「主机」页的凭据面板共用。取不到说明当前没有
+    // 本地中继（客户端模式或 Tailscale 组网关闭），保留空输入由用户手填。
     React.useEffect(() => {
-      if (!open || needsAuthorization !== true) return undefined
+      if (!open) return undefined
       let cancelled = false
       void props.control<TailnetCredentialsView | null>('tailnet.credentials')
         .then(credentials => {
           if (cancelled || credentials === null) return
           setRelayCredentials(credentials)
+          if (needsAuthorization !== true) return
           setEmail(previous => previous === '' ? credentials.account : previous)
           setPassword(previous => previous === '' ? credentials.password : previous)
         })
         .catch(() => undefined)
       return () => { cancelled = true }
     }, [open, needsAuthorization, props.control])
+
+    React.useEffect(() => {
+      if (relayCredentials === undefined) return
+      setRelayAccountDraft(relayCredentials.account)
+      setRelayPasswordDraft(relayCredentials.password)
+    }, [relayCredentials])
+
+    // 面板打开且确实需要登录时自动登录一次；主动退出登录后保持未登录状态。
+    React.useEffect(() => {
+      if (!open) {
+        autoSignInAttempted.current = false
+        return
+      }
+      if (needsAuthorization !== true || status?.tailnet?.phase !== 'ready' || autoSignInAttempted.current) return
+      autoSignInAttempted.current = true
+      void autoSignIn(status)
+    }, [open, needsAuthorization, status?.tailnet?.phase, props.control])
 
     React.useEffect(() => {
       const remoteActive = status?.mode === 'remote'
@@ -696,7 +748,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     }
 
     const signInClient = async (): Promise<void> => {
-      if (email.trim() === '' || password === '' || loginServerUrl.trim() === '') return
+      if (email.trim() === '' || password === '') return
       setBusy(true)
       setError(undefined)
       try {
@@ -706,20 +758,34 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
           await props.control('tailnet.credentials.update', { account: email.trim(), password })
           setRelayCredentials({ account: email.trim(), password })
         }
-        if (status?.clientAuthRequired) {
-          await props.control('client.account.login', { email: email.trim(), password })
-        } else {
-          await props.control('settings.configure', {
-            role: 'client',
-            serverUrl: loginServerUrl.trim(),
-            email: email.trim(),
-            password,
-          })
-        }
+        await props.control('client.account.login', { email: email.trim(), password })
         setDevices(await props.control<RemoteDevice[]>('devices'))
         setStatus(await props.control<RemoteStatus>('status'))
         setNeedsAuthorization(false)
         setPassword('')
+      } catch (reason) {
+        setError(connectionErrorMessageFor(reason, t))
+      } finally {
+        setBusy(false)
+      }
+    }
+
+    // 「主机」页的凭据面板：改邮箱或密码后写回中继，并用新凭据重新登录客户端。
+    const saveRelayCredentials = async (): Promise<void> => {
+      if (relayAccountDraft.trim() === '' || relayPasswordDraft === '') return
+      if (relayCredentials !== undefined && relayAccountDraft.trim() === relayCredentials.account && relayPasswordDraft === relayCredentials.password) return
+      setBusy(true)
+      setError(undefined)
+      setRelaySaved(false)
+      try {
+        const next = { account: relayAccountDraft.trim(), password: relayPasswordDraft }
+        await props.control('tailnet.credentials.update', next)
+        setRelayCredentials(next)
+        await props.control('client.account.login', { email: next.account, password: next.password })
+        setDevices(await props.control<RemoteDevice[]>('devices'))
+        setStatus(await props.control<RemoteStatus>('status'))
+        setRelaySaved(true)
+        window.setTimeout(() => setRelaySaved(false), 2500)
       } catch (reason) {
         setError(connectionErrorMessageFor(reason, t))
       } finally {
@@ -777,7 +843,8 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
       setBusy(true)
       setError(undefined)
       try {
-        await props.control('settings.logout')
+        await props.control('client.logout')
+        autoSignInAttempted.current = true
         setDevices([])
         setSelectedHost(undefined)
         setConnectingHost(undefined)
@@ -1042,6 +1109,55 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     const compact = sidebarEntry === 'compact' && props.wide && props.portal !== undefined
     // 手机端要填的服务地址：优先 Tailscale 对外域名；没有组网时退回当前服务器地址。
     const serviceAddress = status?.tailnet?.publicUrl ?? status?.serverUrl ?? loginServerUrl
+    const relayAddressBar = React.createElement('div', { className: 'dshRemoteRelayAddress' },
+      React.createElement('span', { className: 'dshRemoteRelayAddressLabel' }, t('tailnetServerAddress')),
+      React.createElement('a', { href: serviceAddress, target: '_blank', rel: 'noreferrer' }, serviceAddress),
+      React.createElement('button', {
+        type: 'button',
+        className: 'dshRemoteRelayCopy',
+        onClick: () => void copyRelayValue(serviceAddress),
+      }, t(relayCopied === serviceAddress ? 'tailnetCopied' : 'tailnetCopy')))
+    // 登录成功后「主机」页顶部的连接信息：服务地址、邮箱、密码三项放在一起，
+    // 方便直接抄给手机端；只有邮箱与密码可以改，改完写回中继并重新登录。
+    const relayAccessPanel = status?.tailnet?.publicUrl === undefined ? null : React.createElement('section', {
+      className: 'dshRemoteRelayAccess',
+      'aria-label': t('tailnetAccessTitle'),
+    },
+      React.createElement('div', { className: 'dshRemoteRelayAccessHeading' },
+        React.createElement('strong', null, t('tailnetAccessTitle')),
+        React.createElement('p', null, t('tailnetAccessHint'))),
+      relayAddressBar,
+      React.createElement('div', { className: 'dshRemoteRelayFields' },
+        React.createElement('label', null, t('tailnetAccount'),
+          React.createElement('input', {
+            type: 'email', value: relayAccountDraft, disabled: busy, autoComplete: 'username',
+            onChange: (event: Event) => setRelayAccountDraft((event.target as HTMLInputElement).value),
+          })),
+        React.createElement('label', null, t('tailnetPassword'),
+          React.createElement('div', { className: 'dshRemoteRelayPasswordRow' },
+            React.createElement('input', {
+              type: relaySecretVisible ? 'text' : 'password', value: relayPasswordDraft, disabled: busy,
+              autoComplete: 'current-password',
+              onChange: (event: Event) => setRelayPasswordDraft((event.target as HTMLInputElement).value),
+            }),
+            React.createElement('button', {
+              type: 'button', className: 'dshRemoteRelayCopy', disabled: busy,
+              onClick: () => setRelaySecretVisible(visible => !visible),
+            }, t(relaySecretVisible ? 'tailnetHideSecret' : 'tailnetShowSecret')),
+            React.createElement('button', {
+              type: 'button', className: 'dshRemoteRelayCopy', disabled: busy,
+              onClick: () => void copyRelayValue(relayPasswordDraft),
+            }, t(relayCopied === relayPasswordDraft ? 'tailnetCopied' : 'tailnetCopy'))))),
+      React.createElement('div', { className: 'dshRemoteRelayActions' },
+        React.createElement('button', {
+          type: 'button',
+          disabled: busy || relayAccountDraft.trim() === '' || relayPasswordDraft === ''
+            || (relayCredentials !== undefined
+              && relayAccountDraft.trim() === relayCredentials.account
+              && relayPasswordDraft === relayCredentials.password),
+          onClick: () => void saveRelayCredentials(),
+        }, t(busy ? 'saving' : 'tailnetSaveCredentials')),
+        relaySaved ? React.createElement('span', { className: 'dshRemoteRelaySaved' }, t('tailnetCredentialsSaved')) : null))
 
     return React.createElement(React.Fragment, null,
       compact
@@ -1106,6 +1222,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
                   React.createElement('strong', { className: 'dshRemoteLoginTitle' }, t('signInClient')),
                   React.createElement('span', null, t('signInClientDescription')))),
               React.createElement('div', { className: 'dshRemoteClientLogin' },
+                relayAddressBar,
                 React.createElement('input', {
                   type: 'email', value: email, disabled: busy, autoComplete: 'username', placeholder: t('account'),
                   'aria-label': t('account'), onChange: (event: Event) => setEmail((event.target as HTMLInputElement).value),
@@ -1118,13 +1235,11 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
                   type: 'button', className: 'dshRemoteSecretToggle', disabled: busy,
                   onClick: () => setLoginSecretVisible(visible => !visible),
                 }, t(loginSecretVisible ? 'tailnetHideSecret' : 'tailnetShowSecret')),
-                React.createElement('button', { type: 'button', disabled: busy || loginServerUrl.trim() === '' || email.trim() === '' || password === '', onClick: () => void signInClient() }, t(busy ? 'signingIn' : 'startSignIn')),
-                React.createElement('p', { className: 'dshRemotePasswordHint' }, t('passwordHint'))),
-              React.createElement('div', { className: 'dshRemoteServiceAddress' },
-                React.createElement('span', null, t('currentServiceAddress')),
-                React.createElement('a', { href: serviceAddress, target: '_blank', rel: 'noreferrer' }, serviceAddress))) : null,
+                React.createElement('button', { type: 'button', disabled: busy || email.trim() === '' || password === '', onClick: () => void signInClient() }, t(busy ? 'signingIn' : 'startSignIn')),
+                React.createElement('p', { className: 'dshRemotePasswordHint' }, t('passwordHint')))) : null,
             needsAuthorization !== false ? null : React.createElement(React.Fragment, null,
               selectedHost === undefined ? React.createElement('section', { className: 'dshRemoteHosts', 'aria-label': t('chooseHost') },
+                relayAccessPanel,
                 status?.hostAuthorizationAvailable && status.host?.accountRequired
                   ? React.createElement('section', { className: 'dshRemoteHostAccount' },
                     React.createElement('strong', null, t('thisMachineHost')),

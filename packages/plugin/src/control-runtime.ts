@@ -146,6 +146,7 @@ export class PluginControlRuntime {
       if (endpoint === 'settings.role.set') return ok(await this.setRole(payload))
       if (endpoint === 'settings.codex.set') return ok(await this.setCodex(payload))
       if (endpoint === 'settings.logout') return ok(await this.logout())
+      if (endpoint === 'client.logout') return ok(await this.logoutClient())
       if (endpoint === 'settings.identity.reset') return ok(await this.resetIdentity(payload))
       if (endpoint === 'host.authorization.set' && this.client !== undefined) {
         const value = record(payload)
@@ -469,6 +470,21 @@ export class PluginControlRuntime {
       ? new HostServerApi(serverUrl, new ServerCredentialStore(targetDirectory))
       : new ClientServerApi(serverUrl, new ServerCredentialStore(targetDirectory))
     await targetApi.authorizeOwnedRole(targetIdentity, sourceCredentials.accessToken, sourceCredentials.account)
+  }
+
+  /**
+   * 工作台退出只清掉客户端身份的授权。Host 侧的中继和 Host 授权必须保留，
+   * 否则手机端会在退出工作台后失去可连接的本机。
+   */
+  private async logoutClient(): Promise<null> {
+    if (this.client === undefined) throw new ClientModeError('METHOD_NOT_ALLOWED', 'This plugin is not running in Client mode.')
+    await this.client.clearClientAuthorization()
+    const config = this.settings === undefined ? this.config : resolveConfig(this.settings.get())
+    if (config.serverUrl !== undefined) {
+      const directory = serverStorageDirectory(this.identityDirectory, config.serverUrl, 'client')
+      await new ServerCredentialStore(directory).clear()
+    }
+    return null
   }
 
   private logout(): Promise<PluginSettingsView> {

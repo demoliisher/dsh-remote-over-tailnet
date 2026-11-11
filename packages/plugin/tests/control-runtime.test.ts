@@ -122,6 +122,31 @@ describe('PluginControlRuntime settings setup', () => {
     } })))
   })
 
+  it('signs out only the Client and keeps the Host relay authorization', async () => {
+    const directory = await temporaryDirectory()
+    const serverUrl = 'https://relay.example.test'
+    const settings = settingsBinding({ serverUrl })
+    const stores = {
+      client: new ServerCredentialStore(serverStorageDirectory(directory, serverUrl, 'client')),
+      host: new ServerCredentialStore(serverStorageDirectory(directory, serverUrl, 'host')),
+    }
+    for (const store of Object.values(stores)) {
+      await store.save({ serverUrl, deviceId: 'relay-device', authorizationMethod: 'account', ...tokens() })
+    }
+    const clearClientAuthorization = vi.fn(async () => undefined)
+    const clearHostAuthorization = vi.fn(async () => undefined)
+    const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), directory, settings,
+      { clearClientAuthorization } as unknown as ClientModeRuntime,
+      { clearHostAuthorization } as unknown as HostAuthorizationControl))
+
+    await expect(handler('client.logout', {}, signal())).resolves.toMatchObject({ ok: true, value: null })
+
+    expect(clearClientAuthorization).toHaveBeenCalledOnce()
+    expect(clearHostAuthorization).not.toHaveBeenCalled()
+    await expect(stores.client.load(serverUrl, 'relay-device')).resolves.toBeUndefined()
+    await expect(stores.host.load(serverUrl, 'relay-device')).resolves.toBeDefined()
+  })
+
   it('applies backend settings to the running Host after persistence', async () => {
     const directory = await temporaryDirectory()
     const settings = settingsBinding({ codex: { enabled: false } })
