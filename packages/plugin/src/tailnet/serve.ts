@@ -116,7 +116,7 @@ export async function ensureServe(
     if (looksLikeHttpsCertificateProblem(detail)) {
       throw new ServeError(
         'HTTPS_CERTIFICATES_DISABLED',
-        'Tailscale 的 HTTPS 证书功能未开启，手机无法通过 https://域名 访问。请在 Tailscale 管理台的 DNS 页面启用 HTTPS Certificates，然后重启 DSH。',
+        'Tailscale 的 HTTPS 证书功能未开启，其他设备无法通过 https://域名 访问。请在 Tailscale 管理台的 DNS 页面启用 HTTPS Certificates，然后重启 DSH。',
         { actionUrl: 'https://login.tailscale.com/admin/dns', detail },
       )
     }

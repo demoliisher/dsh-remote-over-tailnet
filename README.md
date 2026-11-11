@@ -2,22 +2,22 @@
 
 项目全名 `dsh-remote-over-tailnet`，文档中简称 ROT。
 
-ROT 是 DeepSeek Harness Desktop 的 Host 插件，主要面向 Windows 上的 DeepSeek Harness Desktop 用户：电脑装好并登录 Tailscale 后，手机端 dsh-go 可以继续操作本机正在运行的会话，逐字流式输出保持原样，电脑不需要公网 IP、端口映射或第三方网关。
+ROT 是 DeepSeek Harness Desktop 的 Host 插件，主要面向 Windows 上的 DeepSeek Harness Desktop 用户：电脑装好并登录 Tailscale 后，同一 tailnet 内的 DSH Remote 客户端可以继续操作本机正在运行的会话，逐字流式输出保持原样，电脑不需要公网 IP、端口映射或第三方网关。DSH Go 是其中一个安卓客户端，任何接入 DSH Remote 的程序都可以连接。
 
-衍生自 MIT 项目 [ds-harness-remote](https://github.com/liguobao/ds-harness-remote)。ROT 去掉了对公共网关的依赖，改为在本机启动中继服务器，再用 Tailscale 把它发布成 HTTPS 地址。手机端 dsh-go 只需填写这个地址和面板上的账号密码。
+衍生自 MIT 项目 [ds-harness-remote](https://github.com/liguobao/ds-harness-remote)。ROT 去掉了对公共网关的依赖，改为在本机启动中继服务器，再用 Tailscale 把它发布成 HTTPS 地址。客户端只需填写这个地址和面板上的账号密码。
 
 ## 前置条件
 
 - Windows 上的 DeepSeek Harness Desktop 0.2.2-rc.1 或兼容版本
 - 电脑已安装 Tailscale 并登录，节点在线
 - tailnet 已开启 HTTPS Certificates（Tailscale 管理台 → DNS）
-- 手机与电脑在同一个 tailnet，手机已安装 Tailscale 与 dsh-go
+- 客户端设备与电脑在同一个 tailnet，且已安装 Tailscale；客户端需支持 DSH Remote（例如安卓上的 DSH Go）
 
 ## 使用
 
 1. 安装 ROT，重启 DeepSeek Harness Desktop。
 2. 打开「插件 → Remote Over Tailnet → 远程设置」，等待四步状态变为完成。
-3. 面板会显示 DSH Go 服务器地址、账号与密码（可显示、可复制）。在 dsh-go 中添加自定义服务器，填入这三项登录。
+3. 面板会显示 DSH Remote 服务器地址、账号与密码（可显示、可复制）。在客户端中添加自定义服务器，填入这三项登录。
 
 插件启动时会自动完成这些步骤，不需要命令行：
 
@@ -42,7 +42,7 @@ ROT 是 DeepSeek Harness Desktop 的 Host 插件，主要面向 Windows 上的 D
 ## 限制
 
 - 阶段一复用系统 Tailscale，电脑必须安装并运行 Tailscale；内嵌 tsnet 的阶段二尚未实现。
-- 不修改 dsh-go，也不支持它的扫码配对，需要在 dsh-go 中手动填写服务器地址与账号密码。
+- 不修改客户端，也不支持扫码配对，需要在客户端中手动填写服务器地址与账号密码。本插件面向所有接入 DSH Remote 的客户端，DSH Go 只是其中之一。
 - 本插件与 Tailscale Inc.、DeepSeek 均无关联，未获其背书。
 
 ## 更多文档

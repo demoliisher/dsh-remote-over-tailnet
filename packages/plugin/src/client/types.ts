@@ -43,7 +43,7 @@ export interface TailnetView {
   updatedAt: string
 }
 
-/** dsh-go 手动填写用的中继账号；按需单独请求，不随状态推送。 */
+/** DSH Remote 客户端手动填写用的中继账号；按需单独请求，不随状态推送。 */
 export interface TailnetCredentialsView {
   account: string
   password: string

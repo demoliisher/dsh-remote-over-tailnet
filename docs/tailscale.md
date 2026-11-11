@@ -5,7 +5,7 @@ ROT 阶段一直接复用系统安装的 Tailscale，插件不创建新的 tailn
 ## 前置条件
 
 - 电脑已安装 Tailscale，已登录，`tailscale status --json` 的 `BackendState` 为 `Running`、`Self.Online` 为 `true`。
-- 手机与电脑在同一个 tailnet，手机 Tailscale 在线。
+- 客户端设备与电脑在同一个 tailnet，客户端设备的 Tailscale 在线。
 - tailnet 已开启 HTTPS Certificates：Tailscale 管理台 → DNS → HTTPS Certificates。开启后 Tailscale 会为节点签发 `https://<节点名>.<tailnet>.ts.net` 证书。
 
 ## 插件会做什么
@@ -39,9 +39,9 @@ tailscale serve status --json
 
 如果 `127.0.0.1:8080` 被其他程序占用，插件会报端口冲突且不会杀进程。请释放端口，或修改 `serverUrl` 的端口。修改端口会更换身份目录，需要重新授权。
 
-### 手机打不开地址
+### 客户端打不开地址
 
-依次确认：手机 Tailscale 在线；能解析节点域名；浏览器打开 `https://<DNSName>/health` 返回 `{"status":"ok"}`。dsh-go 中填写的应是 `https://` 地址，不能填回环地址。
+依次确认：客户端设备 Tailscale 在线；能解析节点域名；浏览器打开 `https://<DNSName>/health` 返回 `{"status":"ok"}`。客户端中填写的应是 `https://` 地址，不能填回环地址。
 
 ### 账号密码丢了
 
@@ -56,4 +56,4 @@ tailscale serve status --json
 - 中继只监听 `127.0.0.1`，不向局域网或公网开端口；对外入口只有 Tailscale 的 443。
 - Tailscale 负责 TLS 终止与设备身份；插件不额外暴露管理接口。
 - 账号密码只写入权限 0600 的文件，面板按需读取，不写日志。
-- 使用范围受 tailnet ACL 约束；如需限制手机访问，请在 Tailscale 管理台配置 ACL。
+- 使用范围受 tailnet ACL 约束；如需限制客户端访问，请在 Tailscale 管理台配置 ACL。

@@ -31,7 +31,7 @@ export function pairingProof(privateKey: string, serverKey: string, id: string, 
     }
 }
 export const fullFingerprint = (key: string): string => createHash('sha256').update(rawKey(key)).digest('hex');
-/** Host-only local workflow. No phone code retrieval, model tools or tunnel RPC. */
+/** Host-only local workflow. No client code retrieval, model tools or tunnel RPC. */
 export class HostPairing {
     private readonly path: string;
     private readonly serverUrl: string;
@@ -75,7 +75,7 @@ export class HostPairing {
             }
             else {
                 if (saved.state !== 'claimed' || typeof code !== 'string' || !/^[0-9]{8}$/.test(code))
-                    throw new ServerApiError('INVALID_MESSAGE', 'Confirm on the phone and enter 8 digits.', false);
+                    throw new ServerApiError('INVALID_MESSAGE', 'Confirm on the client and enter 8 digits.', false);
                 raw = JSON.stringify({ submissionId: uuidV7(), verificationCode: code });
                 saved.submission = this.crypt(raw, id, true);
                 await this.save(saved);
@@ -134,7 +134,7 @@ export class HostPairing {
         if (r.mobile) {
             if (r.mobile.role !== 'client' || r.mobile.deviceId === this.identity.deviceId || r.mobile.identityKey === this.identity.publicKey
                 || s.mobile && (s.mobile.deviceId !== r.mobile.deviceId || s.mobile.identityKey !== r.mobile.identityKey))
-                throw new ServerApiError('PAIRING_DEVICE_CONFLICT', 'Phone identity changed.', false);
+                throw new ServerApiError('PAIRING_DEVICE_CONFLICT', 'Client identity changed.', false);
             s.mobile = r.mobile;
         }
         if (r.state === 'completed') {

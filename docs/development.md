@@ -10,6 +10,10 @@ ROT 的主要受众是 Windows 上的 DeepSeek Harness Desktop 用户。
 
 包名同时决定客户端 bundle 的模块 id 与安装名，改名时须同步 `packages/plugin/package.json`、`packages/plugin/dsh-plugin.json`、`cordis.patch.yml` 与文档。
 
+## 本地化
+
+界面文案只维护简体中文与英文：`packages/plugin/src/client-locale.ts` 的 `en` 与 `zh` 两份字典必须同时补齐。`locale/` 与 `packages/plugin/locale/` 只保留 `README.zh.md`、`README.en.md`、`zh.json`、`en.json`。
+
 ## 环境
 
 - Windows 11 + PowerShell 7（其他平台未验证）
@@ -81,7 +85,7 @@ Get-CimInstance Win32_Process -Filter "Name='DeepSeek Harness.exe'" |
 1. `tailscale serve status --json` 中 443 的转发目标是 `http://127.0.0.1:8080`。
 2. `https://<DNSName>/health` 返回 `{"status":"ok"}`。
 3. 插件详情页的「远程设置」显示服务器地址、账号、密码与四步状态。
-4. dsh-go 填入地址与账号密码后能连上已有会话并看到逐字输出。
+4. DSH Remote 客户端填入地址与账号密码后能连上已有会话并看到逐字输出。
 
 ## 代码结构
 

@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Remote Over Tailnet",
-    "description": "Connect to this DeepSeek Harness workspace from a phone over Tailscale, with token-by-token streaming and no public gateway.",
+    "description": "Connect to this DeepSeek Harness workspace from a DSH Remote client over Tailscale, with token-by-token streaming and no public gateway.",
     "detail": "locale/README.en.md"
   }
 }

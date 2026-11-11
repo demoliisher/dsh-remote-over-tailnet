@@ -753,7 +753,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
       setError(undefined)
       try {
         // 面板上的账号密码就是本机中继的账号密码：改过就先写回中继并让 Host 重新授权，
-        // 这样手机端与桌面端始终用同一套凭据。
+        // 这样客户端与桌面端始终用同一套凭据。
         if (relayCredentials !== undefined && (email.trim() !== relayCredentials.account || password !== relayCredentials.password)) {
           await props.control('tailnet.credentials.update', { account: email.trim(), password })
           setRelayCredentials({ account: email.trim(), password })
@@ -1107,7 +1107,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
         onClick: () => void (remoteActive && !reauth ? openLocalWorkspaces() : show()),
       }, computerIcon, updateDot))
     const compact = sidebarEntry === 'compact' && props.wide && props.portal !== undefined
-    // 手机端要填的服务地址：优先 Tailscale 对外域名；没有组网时退回当前服务器地址。
+    // 客户端要填的服务地址：优先 Tailscale 对外域名；没有组网时退回当前服务器地址。
     const serviceAddress = status?.tailnet?.publicUrl ?? status?.serverUrl ?? loginServerUrl
     const relayAddressBar = React.createElement('div', { className: 'dshRemoteRelayAddress' },
       React.createElement('span', { className: 'dshRemoteRelayAddressLabel' }, t('tailnetServerAddress')),
@@ -1118,7 +1118,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
         onClick: () => void copyRelayValue(serviceAddress),
       }, t(relayCopied === serviceAddress ? 'tailnetCopied' : 'tailnetCopy')))
     // 登录成功后「主机」页顶部的连接信息：服务地址、邮箱、密码三项放在一起，
-    // 方便直接抄给手机端；只有邮箱与密码可以改，改完写回中继并重新登录。
+    // 方便直接抄给其他客户端；只有邮箱与密码可以改，改完写回中继并重新登录。
     const relayAccessPanel = status?.tailnet?.publicUrl === undefined ? null : React.createElement('section', {
       className: 'dshRemoteRelayAccess',
       'aria-label': t('tailnetAccessTitle'),

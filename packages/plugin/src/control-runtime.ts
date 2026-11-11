@@ -474,7 +474,7 @@ export class PluginControlRuntime {
 
   /**
    * 工作台退出只清掉客户端身份的授权。Host 侧的中继和 Host 授权必须保留，
-   * 否则手机端会在退出工作台后失去可连接的本机。
+   * 否则客户端会在退出工作台后失去可连接的本机。
    */
   private async logoutClient(): Promise<null> {
     if (this.client === undefined) throw new ClientModeError('METHOD_NOT_ALLOWED', 'This plugin is not running in Client mode.')

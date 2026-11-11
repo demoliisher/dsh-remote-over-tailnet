@@ -297,7 +297,7 @@ export class TailnetOrchestrator implements TailnetControl {
   /** Host 已授权（或本就无需授权）。 */
   reportAuthorized(): void {
     if (this.state === undefined) return
-    this.state.steps.authorize = { ok: true, detail: '手机端可用面板上的账号密码登录' }
+    this.state.steps.authorize = { ok: true, detail: '客户端可用面板上的账号密码登录' }
     this.publish()
   }
 

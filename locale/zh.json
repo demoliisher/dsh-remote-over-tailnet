@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Remote Over Tailnet",
-    "description": "通过 Tailscale 组网，从手机端远程连接本机 DeepSeek Harness 会话，支持逐字流式输出，无需公网网关。",
+    "description": "通过 Tailscale 组网，从同一 tailnet 内的 DSH Remote 客户端远程连接本机 DeepSeek Harness 会话，支持逐字流式输出，无需公网网关。",
     "detail": "locale/README.zh.md"
   }
 }
