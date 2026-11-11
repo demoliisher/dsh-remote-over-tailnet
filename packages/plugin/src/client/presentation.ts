@@ -24,6 +24,7 @@ export function connectionErrorMessage(code: string, t: Translate): string {
 
 export function connectionStatusLabel(host: RemoteStatus['host'] | undefined, t: Translate): string {
   if (host === undefined) return t('checkingConnection')
+  if (host.enabled === false) return t('serviceStopped')
   if (host.online) return t('online')
   if (host.error !== undefined) return connectionErrorMessage(host.error, t)
   if (!host.reconnecting) return t('offline')

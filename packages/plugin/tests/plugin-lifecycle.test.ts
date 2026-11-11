@@ -98,7 +98,7 @@ describe('Cordis plugin lifecycle', () => {
     }
   })
 
-  it('skips automatic Host authorization when the Host control switch is off at startup', async () => {
+  it('keeps the remote service stopped when the switch is off at startup', async () => {
     const dshHome = await temporaryDirectory('dsh-remote-host-control-off-')
     vi.stubEnv('DSH_HOME', dshHome)
     const fetchSpy = vi.fn<typeof fetch>(async () => { throw new Error('offline fixture') })
@@ -111,7 +111,7 @@ describe('Cordis plugin lifecycle', () => {
     const fiber = await ctx.plugin(remotePlugin, {
       ...disabledAgentDomains,
       serverUrl: 'https://relay.example.test',
-      hostControl: { enabled: false },
+      service: { enabled: false },
       deviceName: 'Cordis host control host',
     })
     const call = (endpoint: string, payload: unknown = {}) => fixture.handler!(endpoint, payload, new AbortController().signal)
@@ -120,7 +120,7 @@ describe('Cordis plugin lifecycle', () => {
       await vi.waitFor(async () => {
         await expect(call('status')).resolves.toMatchObject({
           ok: true,
-          value: { tailnet: { steps: { authorize: { detail: '允许控制本机已关闭' } } } },
+          value: { tailnet: { enabled: false, phase: 'disabled', steps: { authorize: { detail: '远程服务已关闭。' } } } },
         })
       })
       expect(ctx.dshRemote.hostStatus()).toMatchObject({ enabled: false })
@@ -260,7 +260,7 @@ describe('Cordis plugin lifecycle', () => {
     expect(handlers[0]?.channel).toBe('/ds-harness-remote')
     await expect(handlers[0]?.handler('status', {}, new AbortController().signal)).resolves.toEqual({
       ok: true,
-      value: { deviceName: expect.any(String), hostAuthorizationAvailable: false },
+      value: { deviceName: expect.any(String), serviceAvailable: false },
     })
     ctx.provide('apiProxy', {} as never)
     await new Promise(resolve => setTimeout(resolve, 0))
@@ -293,7 +293,7 @@ describe('Cordis plugin lifecycle', () => {
         ok: true,
         value: {
           deviceName: expect.any(String),
-          hostAuthorizationAvailable: false,
+          serviceAvailable: false,
           startupError: { code: 'STORAGE_CONFLICT' },
         },
       })
@@ -314,9 +314,9 @@ describe('Cordis plugin lifecycle', () => {
     const recoveredFiber = await recoveredContext.plugin(remotePlugin, config)
     try {
       await vi.waitFor(() => expect(recoveredContext.dshRemote.currentIdentity()).toMatchObject({ name: 'Cordis storage conflict host' }))
-      const status = await recovered.handler!('status', {}, new AbortController().signal) as { ok: true; value?: { startupError?: unknown; hostAuthorizationAvailable?: boolean } }
+      const status = await recovered.handler!('status', {}, new AbortController().signal) as { ok: true; value?: { startupError?: unknown; serviceAvailable?: boolean } }
       expect(status.value?.startupError).toBeUndefined()
-      expect(status.value?.hostAuthorizationAvailable).toBe(true)
+      expect(status.value?.serviceAvailable).toBe(true)
     } finally {
       await recoveredFiber.dispose()
       await recoveredContext.fiber.dispose()
@@ -340,7 +340,7 @@ describe('Cordis plugin lifecycle', () => {
       expect(ctx.get('dshRemote')).toBe(foreignHostService)
       await expect(call('status')).resolves.toMatchObject({
         ok: true,
-        value: { hostAuthorizationAvailable: true, host: { connectedClients: [] } },
+        value: { serviceAvailable: true, host: { connectedClients: [] } },
       })
       await expect(call('settings.get')).resolves.toMatchObject({ ok: true, value: { writable: true } })
     } finally {
@@ -363,7 +363,7 @@ describe('Cordis plugin lifecycle', () => {
       expect(ctx.get('dshRemote')).toBeUndefined()
       await expect(fixture.handler!('status', {}, new AbortController().signal)).resolves.toMatchObject({
         ok: true,
-        value: { hostAuthorizationAvailable: false },
+        value: { serviceAvailable: false },
       })
     } finally {
       await fiber.dispose()

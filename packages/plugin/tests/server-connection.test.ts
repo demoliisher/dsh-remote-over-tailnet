@@ -1263,6 +1263,7 @@ function config(): ResolvedConfig {
     loopback: { ports: [] },
     tailnet: { enabled: true, servePort: 443 },
     enabled: true,
+    service: { enabled: true },
     serverUrl: 'https://relay.example.test',
     deviceName: 'Host',
     forceRelay: true,

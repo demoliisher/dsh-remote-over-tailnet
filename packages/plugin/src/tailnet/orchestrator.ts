@@ -3,7 +3,7 @@ import type { SafeLogger } from '../logging.js'
 import { join } from 'node:path'
 import { loadOrCreateRelayCredentials, saveRelayCredentials, type RelayCredentials } from './credentials.js'
 import { detectTailnet, httpsCertificateReady, tailnetHttpsUrl } from './detect.js'
-import { ensureServe, ServeError } from './serve.js'
+import { ensureServe, removeServe, ServeError } from './serve.js'
 import { RelayError, relayLogPath, startRelay, type RelayHandle } from './relay.js'
 
 /** 面板上展示的单个步骤状态；ok 为 null 表示还没走到这一步。 */
@@ -56,6 +56,12 @@ export interface TailnetControl {
   credentials(): RelayCredentials | undefined
   /** 修改中继账号密码并重启中继；成功后由调用方重新授权 Host。 */
   updateCredentials(credentials: RelayCredentials): Promise<TailnetSnapshot | undefined>
+  /** 启动本地中继与 Tailscale 转发；失败写入快照，不抛出。 */
+  start(): Promise<void>
+  /** 停止中继并移除 Tailscale 转发，快照转为已停止。 */
+  stop(): Promise<void>
+  /** 中继与对外转发都已就绪。 */
+  relayReady(): boolean
   /** 记录 Host 授权结果，供面板展示。 */
   reportAuthorized(): void
   reportAuthorizeFailure(error: unknown): void
@@ -192,6 +198,7 @@ export class TailnetOrchestrator implements TailnetControl {
 
   async start(): Promise<void> {
     const { config, logger } = this.options
+    this.disposed = false
     const relayPort = tailnetRelayPort(config.serverUrl)
     this.state = this.initialSnapshot(relayPort)
     if (!config.tailnet.enabled) {
@@ -315,6 +322,31 @@ export class TailnetOrchestrator implements TailnetControl {
     const relay = this.relay
     this.relay = undefined
     if (relay !== undefined) await relay.stop()
+    const binary = this.state?.tailscaleBinary
+    this.markStopped('远程服务已关闭。')
+    if (binary !== undefined) await removeServe(binary, { servePort: this.options.config.tailnet.servePort })
+  }
+
+  /** 停止后保留域名与地址，面板显示已停止而不是错误。 */
+  private markStopped(detail: string): void {
+    const base = this.state ?? this.initialSnapshot(tailnetRelayPort(this.options.config.serverUrl))
+    this.state = {
+      ...base,
+      enabled: false,
+      phase: 'disabled',
+      relayPid: undefined,
+      serveTarget: undefined,
+      serveChanged: false,
+      error: undefined,
+      steps: {
+        tailscale: base.steps.tailscale,
+        relay: { ok: null, detail: '未运行' },
+        serve: { ok: null, detail: '未转发' },
+        authorize: { ok: null, detail },
+      },
+      updatedAt: new Date().toISOString(),
+    }
+    this.publish()
   }
 
   private initialSnapshot(relayPort: number | undefined): TailnetSnapshot {

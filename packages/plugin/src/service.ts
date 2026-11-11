@@ -85,7 +85,7 @@ export class HostPluginRuntime {
   ) {
     this.terminalEnabled = config.terminal.enabled
     this.loopbackPorts = [...config.loopback.ports]
-    this.controlEnabled = config.hostControl?.enabled !== false
+    this.controlEnabled = config.service.enabled
     this.codex = new CodexRemoteDomain(config.codex, logger)
     this.connections = new ConnectionController(this.identities, (context, send) => {
       const peerGateway = this.localGateway?.createPeer?.() ?? this.localGateway

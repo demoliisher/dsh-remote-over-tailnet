@@ -5,7 +5,7 @@ describe('plugin config', () => {
   it('applies safe defaults', () => {
     expect(resolveConfig({}, {})).toMatchObject({
       enabled: true,
-      hostControl: { enabled: true },
+      service: { enabled: true },
       terminal: { enabled: true },
       sidebar: { entry: 'standard' },
       loopback: { ports: [] },
@@ -25,8 +25,8 @@ describe('plugin config', () => {
   })
 
   it('keeps Host control enabled by default while allowing an explicit opt-out', () => {
-    expect(resolveConfig({}, {}).hostControl?.enabled).toBe(true)
-    expect(resolveConfig({ hostControl: { enabled: false } }, {}).hostControl?.enabled).toBe(false)
+    expect(resolveConfig({}, {}).service.enabled).toBe(true)
+    expect(resolveConfig({ service: { enabled: false } }, {}).service.enabled).toBe(false)
   })
 
   it('normalizes the loopback port list and the sidebar entry', () => {

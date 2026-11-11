@@ -104,7 +104,7 @@ export class PluginControlRuntime {
       if (endpoint === 'settings.development.set') return ok(await this.setDevelopment(payload))
       if (endpoint === 'settings.appearance.set') return ok(await this.setAppearance(payload))
       if (endpoint === 'settings.get') return ok(this.settingsView())
-      if (endpoint === 'host.authorization.set') return ok(await this.setHostControl(payload))
+      if (endpoint === 'service.set') return ok(await this.setService(payload))
       if (endpoint === 'host.reconnect') {
         if (this.host === undefined) throw new ControlError('METHOD_NOT_ALLOWED', '插件当前没有运行 Host。')
         this.host.reconnectHost()
@@ -118,7 +118,7 @@ export class PluginControlRuntime {
           return this.withTailnet(ok({
             deviceName: hostname(),
             startupError: safeStartupError(this.startupFailure),
-            hostAuthorizationAvailable: false,
+            serviceAvailable: false,
           }))
         }
         return this.withTailnet(ok(this.hostOnlyStatus()))
@@ -137,27 +137,36 @@ export class PluginControlRuntime {
   }
 
   /**
-   * 允许控制本机只切换 Host 控制连接：打开时确保中继上有 Host 授权并恢复连接，
-   * 关闭时断开连接但保留设备身份，重新打开无需再次授权。
+   * 「远程服务」总开关：打开时启动本地中继与 Tailscale 转发、完成 Host 授权，再恢复控制连接；
+   * 关闭时先断开 Host 连接，再停止中继并移除转发。
    */
-  private async setHostControl(payload: unknown): Promise<Record<string, unknown>> {
-    if (this.host === undefined) throw new ControlError('METHOD_NOT_ALLOWED', '插件当前没有运行 Host。')
+  private async setService(payload: unknown): Promise<Record<string, unknown>> {
     const value = record(payload)
-    if (typeof value.enabled !== 'boolean') throw new ControlError('INVALID_MESSAGE', '需要提供允许控制本机的开关状态。')
-    await this.persistHostControl(value.enabled)
+    if (typeof value.enabled !== 'boolean') throw new ControlError('INVALID_MESSAGE', '需要提供远程服务的开关状态。')
+    await this.persistService(value.enabled)
     if (!value.enabled) {
-      await this.host.setHostControl(false)
+      await this.host?.setHostControl(false)
+      await this.tailnet?.stop()
       return this.hostOnlyStatus()
     }
-    // 先确认中继授权再恢复连接：用过期凭据 resume 会先触发一轮失败重连。
+    if (this.host === undefined) throw new ControlError('METHOD_NOT_ALLOWED', '插件当前没有运行 Host。')
     if (this.tailnet !== undefined) {
-      const credentials = this.credentials()
-      try {
-        await this.host.authorizeHostWithAccount(credentials.account, credentials.password)
-        this.tailnet.reportAuthorized()
-      } catch (error) {
-        this.tailnet.reportAuthorizeFailure(error)
-        throw error
+      await this.tailnet.start()
+      const snapshot = this.tailnet.snapshot()
+      // 外部服务器不运行本地中继，此时 disabled 快照无需等待 relayReady。
+      if (snapshot?.phase !== 'disabled' && !this.tailnet.relayReady()) {
+        throw new ControlError('REMOTE_SERVICE_UNAVAILABLE', snapshot?.error?.message ?? '本地中继未就绪，远程服务未能启动。')
+      }
+      // 先确认中继授权再恢复连接：用过期凭据 resume 会先触发一轮失败重连。
+      if (this.tailnet.relayReady()) {
+        const credentials = this.credentials()
+        try {
+          await this.host.authorizeHostWithAccount(credentials.account, credentials.password)
+          this.tailnet.reportAuthorized()
+        } catch (error) {
+          this.tailnet.reportAuthorizeFailure(error)
+          throw error
+        }
       }
     }
     await this.host.setHostControl(true)
@@ -184,9 +193,9 @@ export class PluginControlRuntime {
     return snapshot ?? null
   }
 
-  private async persistHostControl(enabled: boolean): Promise<void> {
+  private async persistService(enabled: boolean): Promise<void> {
     const current = resolveConfig(this.settings === undefined ? this.config : this.settings.get())
-    const next = resolveConfig({ ...editableConfig(current), hostControl: { enabled } })
+    const next = resolveConfig({ ...editableConfig(current), service: { enabled } })
     this.config = next
     if (this.settings !== undefined) await this.settings.replace(editableConfig(next))
   }
@@ -246,7 +255,7 @@ export class PluginControlRuntime {
   private hostOnlyStatus(): Record<string, unknown> {
     return {
       deviceName: hostname(),
-      hostAuthorizationAvailable: this.host !== undefined,
+      serviceAvailable: this.host !== undefined,
       ...(this.host === undefined ? {} : { host: this.host.hostStatus() }),
     }
   }
@@ -258,7 +267,7 @@ function editableConfig(config: ResolvedConfig): Config {
     ...(config.serverUrl === undefined ? {} : { serverUrl: config.serverUrl }),
     terminal: config.terminal,
     sidebar: config.sidebar,
-    hostControl: config.hostControl ?? { enabled: true },
+    service: config.service,
     loopback: config.loopback,
     tailnet: {
       enabled: config.tailnet.enabled,

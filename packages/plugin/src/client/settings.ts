@@ -117,12 +117,12 @@ export function createRemotePluginOptions(React: ClientReact) {
       }
     }
 
-    const setCurrentDeviceControl = async (enabled: boolean): Promise<void> => {
+    const setRemoteService = async (enabled: boolean): Promise<void> => {
       setBusy(true)
       setError(undefined)
       setNotice(undefined)
       try {
-        await props.control<RemoteStatus>('host.authorization.set', { enabled })
+        await props.control<RemoteStatus>('service.set', { enabled })
       } catch (reason) {
         setError(messageOf(reason, t))
       } finally {
@@ -345,11 +345,13 @@ export function createRemotePluginOptions(React: ClientReact) {
     const connectedClients = host?.connectedClients ?? []
     const badgeLabel = host === undefined
       ? t('checkingConnection')
-      : host.online
-        ? t('online')
-        : host.accountRequired
-          ? t('accountRequired')
-          : t('offline')
+      : host.enabled === false
+        ? t('serviceStopped')
+        : host.online
+          ? t('online')
+          : host.accountRequired
+            ? t('accountRequired')
+            : t('offline')
     const startupErrorBanner = settingsView?.startupError !== undefined
       ? React.createElement('p', { className: 'dshRemoteError', role: 'alert' },
         startupErrorMessage(settingsView.startupError, t))
@@ -371,14 +373,14 @@ export function createRemotePluginOptions(React: ClientReact) {
             React.createElement('code', null, hostDeviceId || '—'))),
         React.createElement('div', { className: 'dshRemoteAuthorizationSetting' },
           React.createElement('div', null,
-            React.createElement('strong', null, t('allowControlCurrentDevice')),
-            React.createElement('p', null, t('allowControlHint'))),
-          status?.hostAuthorizationAvailable
+            React.createElement('strong', null, t('remoteService')),
+            React.createElement('p', null, t('remoteServiceHint'))),
+          status?.serviceAvailable
             ? React.createElement('input', {
               type: 'checkbox', role: 'switch', disabled: busy,
-              'aria-label': t('allowControlCurrentDevice'),
+              'aria-label': t('remoteService'),
               checked: host?.enabled === true,
-              onChange: (event: Event) => void setCurrentDeviceControl((event.target as HTMLInputElement).checked),
+              onChange: (event: Event) => void setRemoteService((event.target as HTMLInputElement).checked),
             })
             : null),
         React.createElement('div', { className: 'dshRemoteConnection', 'aria-live': 'polite' },

@@ -12,7 +12,8 @@ export interface Config {
   terminal?: { enabled?: boolean }
   /** Where the Desktop client shows the Remote entry: beside Settings or in the account row. */
   sidebar?: { entry?: 'standard' | 'compact' }
-  hostControl?: { enabled?: boolean }
+  /** 「远程服务」总开关：中继、Tailscale 转发与 Host 控制连接一起启停。 */
+  service?: { enabled?: boolean }
   loopback?: { ports?: number[] }
   /**
    * 本地中继与 Tailscale 组网编排（阶段一：复用系统已安装的 Tailscale）。
@@ -66,7 +67,7 @@ export interface ResolvedCodexConfig {
   }
   terminal: { enabled: boolean }
   sidebar: { entry: 'standard' | 'compact' }
-  hostControl?: { enabled: boolean }
+  service: { enabled: boolean }
   loopback: { ports: number[] }
   tailnet: {
     enabled: boolean
@@ -96,7 +97,7 @@ export const entryConfigSchema = s.object({
   deviceName: s.string(),
   terminal: s.object({ enabled: s.boolean() }),
   sidebar: s.object({ entry: s.union(['standard', 'compact'] as const) }),
-  hostControl: s.object({ enabled: s.boolean() }),
+  service: s.object({ enabled: s.boolean() }),
   loopback: s.object({ ports: s.array(s.number()) }),
   tailnet: s.object({ enabled: s.boolean(), dataDirectory: s.string(), servePort: s.number() }),
   forceRelay: s.boolean(),
@@ -146,7 +147,7 @@ const configSchema = z.object({
   deviceName: z.string().trim().min(1).max(80).optional(),
   terminal: z.object({ enabled: z.boolean().optional() }).strict().optional(),
   sidebar: z.object({ entry: z.enum(['standard', 'compact']).optional() }).strict().optional(),
-  hostControl: z.object({ enabled: z.boolean().optional() }).strict().optional(),
+  service: z.object({ enabled: z.boolean().optional() }).strict().optional(),
   loopback: z.object({ ports: z.array(z.number().int().min(1024).max(65535)).max(16).optional() }).strict().optional(),
   tailnet: z.object({
     enabled: z.boolean().optional(),
@@ -177,7 +178,7 @@ export function resolveConfig(input: ConfigInput = {}, env: NodeJS.ProcessEnv = 
     enabled: parsed.enabled ?? true,
     ...(serverUrl === undefined ? {} : { serverUrl }),
     deviceName: parsed.deviceName ?? env.DSH_REMOTE_DEVICE_NAME ?? hostname(),
-    hostControl: { enabled: parsed.hostControl?.enabled ?? true },
+    service: { enabled: parsed.service?.enabled ?? true },
     terminal: { enabled: parsed.terminal?.enabled ?? (env.DSH_REMOTE_TERMINAL_ENABLED === undefined || env.DSH_REMOTE_TERMINAL_ENABLED === 'true') },
     sidebar: { entry: parsed.sidebar?.entry === 'compact' ? 'compact' : 'standard' },
     loopback: { ports: [...new Set(parsed.loopback?.ports ?? [])] },

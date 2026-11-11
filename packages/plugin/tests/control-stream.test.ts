@@ -249,7 +249,7 @@ describe('loopback status event stream', () => {
 
     expect(response.statusCode).toBe(200)
     const head = response.chunks.join('')
-    expect(head).toContain('"hostAuthorizationAvailable":true')
+    expect(head).toContain('"serviceAvailable":true')
     expect(head).toContain('"online":true')
 
     await dispose()

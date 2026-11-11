@@ -306,12 +306,12 @@ async function activate(
       logger.error('Remote plugin startup failed', safeStartupError(initialStorageError))
     } else {
       try {
-        await tailnet?.start()
-        await runtime!.start()
-        if (config.hostControl?.enabled === false) {
-          await runtime!.setHostControl(false)
-          tailnet?.reportAuthorizeSkipped('允许控制本机已关闭')
+        if (config.service.enabled === false) {
+          await runtime!.start()
+          await tailnet?.stop()
         } else {
+          await tailnet?.start()
+          await runtime!.start()
           await authorizeTailnetHost(tailnet, runtime!)
         }
       } catch (error) {

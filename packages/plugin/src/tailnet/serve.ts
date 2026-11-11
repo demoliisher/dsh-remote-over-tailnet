@@ -5,6 +5,7 @@ export type ServeErrorCode =
   | 'SERVE_STATUS_FAILED'
   | 'SERVE_APPLY_FAILED'
   | 'SERVE_VERIFY_FAILED'
+  | 'SERVE_OFF_FAILED'
   | 'HTTPS_CERTIFICATES_DISABLED'
 
 export class ServeError extends Error {
@@ -135,6 +136,26 @@ export async function ensureServe(
     )
   }
   return { changed: true, previousTarget, webKey, target: options.target }
+}
+
+/**
+ * 移除 servePort 上的 HTTPS 转发。未配置转发时不做任何事。
+ */
+export async function removeServe(
+  binary: string,
+  options: TailnetOptions & { servePort?: number } = {},
+): Promise<void> {
+  const state = await readServeState(binary, options)
+  if (state.currentTarget === null) return
+  const servePort = options.servePort ?? 443
+  const result = await runTailscale(binary, ['serve', `--https=${servePort}`, 'off'], options.commandTimeoutMs)
+  if (!result.ok) {
+    throw new ServeError(
+      'SERVE_OFF_FAILED',
+      `移除 tailscale serve 转发失败：${firstLine(result.stderr) || firstLine(result.stdout) || String(result.error ?? '')}`,
+      { detail: result.stderr || result.stdout },
+    )
+  }
 }
 
 function looksLikeHttpsCertificateProblem(detail: string): boolean {

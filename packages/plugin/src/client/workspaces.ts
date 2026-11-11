@@ -133,18 +133,23 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     // feed replays the latest status to a new subscriber.
     React.useEffect(() => props.statusFeed.subscribe(setStatus), [props.statusFeed])
 
-    // 打开面板时取一次本机中继账号；没有本地中继时接口失败，保留空输入。
+    // 远程服务停用时中继尚未启动，没有可读的账号；这里保留空输入，不显示启动错误。
+    const serviceEnabled = status?.host?.enabled
     React.useEffect(() => {
       if (!open) return undefined
+      if (serviceEnabled === false) {
+        setError(undefined)
+        return undefined
+      }
       let cancelled = false
       void props.control<TailnetCredentialsView | null>('tailnet.credentials')
         .then(credentials => {
           if (cancelled || credentials === null) return
           setRelayCredentials(credentials)
         })
-        .catch(reason => setError(messageOf(reason, t)))
+        .catch(reason => { if (!cancelled) setError(messageOf(reason, t)) })
       return () => { cancelled = true }
-    }, [open, props.control])
+    }, [open, props.control, serviceEnabled])
 
     React.useEffect(() => {
       if (relayCredentials === undefined) return
@@ -195,11 +200,11 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
       }
     }
 
-    const setHostAuthorization = async (enabled: boolean): Promise<void> => {
+    const setRemoteService = async (enabled: boolean): Promise<void> => {
       setBusy(true)
       setError(undefined)
       try {
-        setStatus(await props.control<RemoteStatus>('host.authorization.set', { enabled }))
+        setStatus(await props.control<RemoteStatus>('service.set', { enabled }))
       } catch (reason) {
         setError(messageOf(reason, t))
       } finally {
@@ -336,27 +341,29 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     const host = status?.host
     const hostStateLabel = host === undefined
       ? t('checkingConnection')
-      : host.online
-        ? t('online')
-        : host.reconnecting
-          ? t('connecting')
-          : t('offline')
+      : host.enabled === false
+        ? t('serviceStopped')
+        : host.online
+          ? t('online')
+          : host.reconnecting
+            ? t('connecting')
+            : t('offline')
     const connectedClients = host?.connectedClients ?? []
     const hostControlPanel = React.createElement('section', { className: 'dshRemoteHostControl' },
       React.createElement('div', { className: 'dshRemoteSectionHeading' },
         React.createElement('div', { className: 'dshRemoteSectionTitle' },
-          React.createElement('strong', null, t('thisMachineHost')),
-          status?.hostAuthorizationAvailable
+          React.createElement('strong', null, t('remoteService')),
+          status?.serviceAvailable
             ? React.createElement('label', { className: 'dshRemoteHostControlToggle' },
-              React.createElement('span', null, t('allowControlCurrentDevice')),
               React.createElement('input', {
                 type: 'checkbox',
                 role: 'switch',
-                'aria-label': t('allowControlCurrentDevice'),
+                'aria-label': t('remoteService'),
                 checked: host?.enabled === true,
-                onChange: (event: Event) => void setHostAuthorization((event.target as HTMLInputElement).checked),
+                onChange: (event: Event) => void setRemoteService((event.target as HTMLInputElement).checked),
               }))
             : null)),
+      React.createElement('p', { className: 'dshRemoteHostHint' }, t('remoteServiceHint')),
       React.createElement('p', { className: 'dshRemoteHostState' },
         status?.deviceName === undefined
           ? hostStateLabel

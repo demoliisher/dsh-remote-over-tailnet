@@ -75,7 +75,7 @@ export interface RemoteStatus {
     code: string
     message: string
   }
-  hostAuthorizationAvailable: boolean
+  serviceAvailable: boolean
   tailnet?: TailnetView | null
   host?: RemoteHostStatus
 }
@@ -105,7 +105,7 @@ export interface PluginSettings {
   logLevel?: 'debug' | 'info' | 'warn' | 'error'
   terminal?: { enabled?: boolean }
   sidebar?: { entry?: SidebarEntryStyle }
-  hostControl?: { enabled?: boolean }
+  service?: { enabled?: boolean }
   tailnet?: { enabled?: boolean; dataDirectory?: string; servePort?: number }
 }
 

@@ -68,7 +68,7 @@ describe('PluginControlRuntime settings', () => {
         config: {
           enabled: true,
           serverUrl: 'https://relay.example.test',
-          hostControl: { enabled: true },
+          service: { enabled: true },
           codex: { enabled: false, binary: 'codex' },
           tailnet: { enabled: true, servePort: 443 },
         },
@@ -93,7 +93,7 @@ describe('PluginControlRuntime settings', () => {
       ok: true,
       value: {
         deviceName: hostname(),
-        hostAuthorizationAvailable: false,
+        serviceAvailable: false,
         startupError: { code: 'IDENTITY_INVALID', message: 'device public and private keys do not match' },
       },
     })
@@ -101,32 +101,32 @@ describe('PluginControlRuntime settings', () => {
   })
 })
 
-describe('PluginControlRuntime Host control', () => {
-  it('turns Host control off without revoking the device and persists the switch', async () => {
+describe('PluginControlRuntime remote service', () => {
+  it('turns the remote service off without revoking the device and persists the switch', async () => {
     const settings = settingsBinding({ serverUrl: 'https://relay.example.test' })
     const setHostControl = vi.fn(async (_enabled: boolean) => undefined)
     const authorizeHostWithAccount = vi.fn(async () => ({ method: 'account' }))
     const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, hostStub({ setHostControl, authorizeHostWithAccount })))
 
-    const off = await handler('host.authorization.set', { enabled: false }, signal())
+    const off = await handler('service.set', { enabled: false }, signal())
     expect(off).toMatchObject({
       ok: true,
-      value: { deviceName: hostname(), hostAuthorizationAvailable: true, host: { enabled: true, connectedClients: [] } },
+      value: { deviceName: hostname(), serviceAvailable: true, host: { enabled: true, connectedClients: [] } },
     })
     expect(setHostControl).toHaveBeenCalledWith(false)
     expect(authorizeHostWithAccount).not.toHaveBeenCalled()
-    expect(settings.get().hostControl).toEqual({ enabled: false })
+    expect(settings.get().service).toEqual({ enabled: false })
 
-    await expect(handler('host.authorization.set', { enabled: 'false' }, signal()))
+    await expect(handler('service.set', { enabled: 'false' }, signal()))
       .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'INVALID_MESSAGE' } } })
-    expect(settings.get().hostControl).toEqual({ enabled: false })
+    expect(settings.get().service).toEqual({ enabled: false })
 
     const noHost = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, undefined))
-    await expect(noHost('host.authorization.set', { enabled: true }, signal()))
+    await expect(noHost('service.set', { enabled: true }, signal()))
       .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'METHOD_NOT_ALLOWED' } } })
   })
 
-  it('re-authorizes through the tailnet before resuming Host control', async () => {
+  it('starts the tailnet and re-authorizes before resuming Host control', async () => {
     const settings = settingsBinding({ serverUrl: 'https://relay.example.test' })
     const calls: string[] = []
     const host = hostStub({
@@ -139,11 +139,12 @@ describe('PluginControlRuntime Host control', () => {
     const tailnet = tailnetStub({ credentials: { account: 'relay@example.test', password: 'relay-password' } })
     const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, host, tailnet))
 
-    await expect(handler('host.authorization.set', { enabled: true }, signal())).resolves.toMatchObject({ ok: true })
+    await expect(handler('service.set', { enabled: true }, signal())).resolves.toMatchObject({ ok: true })
     expect(calls).toEqual(['authorize:relay@example.test:relay-password', 'setHostControl:true'])
+    expect(tailnet.start).toHaveBeenCalledOnce()
     expect(tailnet.reportAuthorized).toHaveBeenCalledOnce()
     expect(tailnet.reportAuthorizeFailure).not.toHaveBeenCalled()
-    expect(settings.get().hostControl).toEqual({ enabled: true })
+    expect(settings.get().service).toEqual({ enabled: true })
 
     const failure = new Error('relay rejected the Host')
     calls.length = 0
@@ -153,15 +154,42 @@ describe('PluginControlRuntime Host control', () => {
       authorizeHostWithAccount: vi.fn(async () => { throw failure }),
       setHostControl: vi.fn(async (enabled: boolean) => { calls.push(`setHostControl:${String(enabled)}`) }),
     }), rejecting))
-    const failed = await rejectingHandler('host.authorization.set', { enabled: true }, signal())
+    const failed = await rejectingHandler('service.set', { enabled: true }, signal())
     expect(failed).toMatchObject({ ok: false, error: { message: 'relay rejected the Host' } })
     expect(rejecting.reportAuthorizeFailure).toHaveBeenCalledWith(failure)
     expect(calls).toEqual([])
 
     const unavailable = tailnetStub({ credentials: undefined })
     const unavailableHandler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, hostStub(), unavailable))
-    await expect(unavailableHandler('host.authorization.set', { enabled: true }, signal()))
+    await expect(unavailableHandler('service.set', { enabled: true }, signal()))
       .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'CREDENTIALS_UNAVAILABLE' } } })
+  })
+
+  it('stops the local relay and the Tailscale forward when the remote service is turned off', async () => {
+    const settings = settingsBinding({ serverUrl: 'http://127.0.0.1:8080' })
+    const host = hostStub()
+    const tailnet = tailnetStub({ snapshot: tailnetSnapshot() })
+    const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, host, tailnet))
+
+    await expect(handler('service.set', { enabled: false }, signal())).resolves.toMatchObject({ ok: true })
+    expect(host.setHostControl).toHaveBeenCalledWith(false)
+    expect(tailnet.stop).toHaveBeenCalledOnce()
+    expect(tailnet.start).not.toHaveBeenCalled()
+    expect(settings.get().service).toEqual({ enabled: false })
+  })
+
+  it('refuses to enable the remote service when the local relay is unavailable', async () => {
+    const settings = settingsBinding({ serverUrl: 'http://127.0.0.1:8080' })
+    const host = hostStub()
+    const tailnet = tailnetStub({
+      snapshot: { ...tailnetSnapshot(), relayPort: undefined, phase: 'error', error: { code: 'RELAY_START_FAILED', message: '中继启动失败' } },
+      relayReady: false,
+    })
+    const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, host, tailnet))
+
+    const failed = await handler('service.set', { enabled: true }, signal())
+    expect(failed).toMatchObject({ ok: false, error: { message: '中继启动失败', details: { remoteCode: 'REMOTE_SERVICE_UNAVAILABLE' } } })
+    expect(host.setHostControl).not.toHaveBeenCalled()
   })
 
   it('starts a manual reconnect and reports Host activity without a tailnet', async () => {
@@ -176,7 +204,7 @@ describe('PluginControlRuntime Host control', () => {
       ok: true,
       value: {
         host: { reconnecting: true, lastActiveAt: 1_723_456_789_000, error: 'CONNECTION_FAILED' },
-        hostAuthorizationAvailable: true,
+        serviceAvailable: true,
       },
     })
     expect(reconnectHost).toHaveBeenCalledOnce()
@@ -195,7 +223,7 @@ describe('PluginControlRuntime Host control', () => {
       ok: true,
       value: {
         deviceName: hostname(),
-        hostAuthorizationAvailable: true,
+        serviceAvailable: true,
         tailnet: snapshot,
         host: { configured: true, online: true, connectedClients: [] },
       },
@@ -203,7 +231,7 @@ describe('PluginControlRuntime Host control', () => {
 
     const noHost = register(new PluginControlRuntime(resolveConfig({ serverUrl: 'https://relay.example.test' }), undefined, undefined, tailnetStub({ snapshot })))
     const status = await noHost('status', {}, signal())
-    expect(status).toMatchObject({ ok: true, value: { hostAuthorizationAvailable: false, tailnet: snapshot } })
+    expect(status).toMatchObject({ ok: true, value: { serviceAvailable: false, tailnet: snapshot } })
     expect((status as { ok: true; value: Record<string, unknown> }).value).not.toHaveProperty('host')
   })
 })
@@ -379,8 +407,12 @@ function tailnetStub(options: {
   snapshot?: TailnetSnapshot
   credentials?: { account: string; password: string }
   updateCredentials?: TailnetControl['updateCredentials']
+  relayReady?: boolean
 } = {}): TailnetControl {
   return {
+    start: vi.fn(async () => undefined),
+    stop: vi.fn(async () => undefined),
+    relayReady: vi.fn(() => options.relayReady ?? true),
     snapshot: vi.fn(() => options.snapshot),
     credentials: vi.fn(() => options.credentials),
     updateCredentials: options.updateCredentials ?? vi.fn(async () => options.snapshot),
