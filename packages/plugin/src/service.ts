@@ -19,10 +19,6 @@ import {
   HostServerApi,
   ServerApiError,
   type DeviceAuthorization,
-  type OAuthProvider,
-  type OAuthProviderInfo,
-  type OAuthQrPollResult,
-  type OAuthQrSession,
 } from './server-api.js'
 import { HostServerConnection } from './server-connection.js'
 import { ServerCredentialStore } from './server-credentials.js'
@@ -294,41 +290,6 @@ export class HostPluginRuntime {
       throw new ServerApiError('SERVER_NOT_CONFIGURED', 'Configure serverUrl before reconnecting.', false)
     }
     this.serverConnection.reconnect()
-  }
-
-  async hostOAuthProviders(): Promise<OAuthProviderInfo[]> {
-    if (this.serverApi === undefined) {
-      throw new ServerApiError('SERVER_NOT_CONFIGURED', 'Remote Host Server is unavailable.', false)
-    }
-    return this.serverApi.oauthProviders()
-  }
-
-  async startHostOAuthQrLogin(provider: OAuthProvider): Promise<OAuthQrSession> {
-    if (this.serverApi === undefined) {
-      throw new ServerApiError('SERVER_NOT_CONFIGURED', 'Remote Host Server is unavailable.', false)
-    }
-    return this.serverApi.startOAuthQrLogin(provider)
-  }
-
-  async pollHostOAuthQrLogin(qrId: string): Promise<OAuthQrPollResult> {
-    if (this.serverApi === undefined) {
-      throw new ServerApiError('SERVER_NOT_CONFIGURED', 'Remote Host Server is unavailable.', false)
-    }
-    const result = await this.serverApi.pollOAuthQrLogin(this.currentIdentity(), qrId, async () => {
-      await this.serverConnection?.stop()
-      await this.pairing?.discard()
-      this.pairing = undefined
-      this.identity = await this.identities.reset(this.config.deviceName)
-      this.serverApi!.bindIdentity(this.identity)
-      this.serverConnection = this.createServerConnection(this.identity)
-      this.initializePairing()
-      return this.identity
-    })
-    if (result.status === 'complete') {
-      this.serverConnection?.reconnect()
-      this.logger.info('Host account authorized through OAuth QR login')
-    }
-    return result
   }
 
   async clearHostAuthorization(): Promise<void> {

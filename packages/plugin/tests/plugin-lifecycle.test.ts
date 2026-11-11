@@ -89,7 +89,7 @@ describe('Cordis plugin lifecycle', () => {
       // Nested entry Config must survive: schemastery resolves `loopback` and
       // `acp` to default-only containers, which previously overwrote the entry
       // Config when it was merged as a flat layer on read.
-      expect(resolvedFromSchema).toMatchObject({ loopback: { ports: [8080] }, acp: { enabled: true } })
+      expect(resolvedFromSchema).toMatchObject({ loopback: { ports: [8080] }, acp: { enabled: false } })
       // A stored section still wins, including an explicit reset to an empty list.
       expect(registerSchema?.({ loopback: { ports: [] } })).toMatchObject({ loopback: { ports: [] } })
     } finally {
@@ -109,15 +109,14 @@ describe('Cordis plugin lifecycle', () => {
     vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input, init) => {
       const url = String(input)
       requests.push(url)
-      if (url === 'https://old.example.com/api/v1/auth/oauth/providers') {
+      if (url === 'https://old.example.com/api/v1/auth/login') {
         oldRequestSignal = init?.signal
         return new Promise<Response>((_resolve, reject) => {
           oldRequestSignal!.addEventListener('abort', () => reject(oldRequestSignal!.reason), { once: true })
         })
       }
-      if (url === 'https://new.example.com/api/v1/auth/oauth/providers') {
-        return Response.json({ items: [{ id: 'github', displayName: 'GitHub',
-          startUrl: '/api/v1/auth/oauth/github/start', qrStartUrl: '/api/v1/auth/oauth/qr/start?provider=github' }] })
+      if (url === 'https://new.example.com/api/v1/auth/login') {
+        return Response.json({ error: { code: 'AUTH_INVALID', message: 'Invalid credentials' } }, { status: 401 })
       }
       return Response.json({ error: { code: 'AUTHORIZATION_REQUIRED', message: 'Sign in required' } }, { status: 401 })
     }))
@@ -136,7 +135,7 @@ describe('Cordis plugin lifecycle', () => {
       await vi.waitFor(() => { expect(ctx.dshRemoteClient.status().serverUrl).toBe(config.serverUrl) })
       const oldHost = ctx.dshRemote, oldClient = ctx.dshRemoteClient
       const hostClose = vi.spyOn(oldHost, 'close'), clientClose = vi.spyOn(oldClient, 'close')
-      const pending = call('client.account.providers')
+      const pending = call('client.account.login', { email: 'user@example.com', password: 'password' })
       await vi.waitFor(() => { expect(oldRequestSignal).toBeDefined() })
       await expect(call('settings.server.set', { serverUrl: 'https://new.example.com/' })).resolves.toMatchObject({
         ok: true, value: { config: { serverUrl: 'https://new.example.com' }, applies: 'live', associations: {} },
@@ -149,11 +148,11 @@ describe('Cordis plugin lifecycle', () => {
       expect(ctx.dshRemoteClient).not.toBe(oldClient)
       expect(ctx.dshRemote.currentIdentity().deviceId).not.toBe(oldHost.currentIdentity().deviceId)
       await expect(call('status')).resolves.toMatchObject({ ok: true, value: { serverUrl: 'https://new.example.com' } })
-      await expect(call('client.account.providers')).resolves.toMatchObject({ ok: true, value: [{ id: 'github' }] })
+      await expect(call('client.account.login', { email: 'user@example.com', password: 'password' })).resolves.toMatchObject({ ok: false })
       const newHost = ctx.dshRemote
       await call('settings.server.set', { serverUrl: 'https://new.example.com' })
       expect(ctx.dshRemote).toBe(newHost)
-      expect(requests.filter(url => url === 'https://new.example.com/api/v1/auth/oauth/providers')).toHaveLength(1)
+      expect(requests.filter(url => url === 'https://new.example.com/api/v1/auth/login')).toHaveLength(1)
     } finally {
       await fiber.dispose()
       await ctx.fiber.dispose()
@@ -288,7 +287,7 @@ describe('Cordis plugin lifecycle', () => {
       { status: 401 },
     )))
 
-    const serverUrl = 'https://dsh.r2049.cn'
+    const serverUrl = 'https://relay.example.test'
     const legacyRoot = join(dshHome, 'remote')
     const hostDir = remotePlugin.serverStorageDirectory(legacyRoot, serverUrl, 'host')
     const clientDir = remotePlugin.serverStorageDirectory(legacyRoot, serverUrl, 'client')

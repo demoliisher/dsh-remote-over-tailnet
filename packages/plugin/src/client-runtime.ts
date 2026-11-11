@@ -46,7 +46,6 @@ import { LoopbackPreview } from './loopback-preview.js'
 import { RemoteTypertGateway } from './remote-typert-gateway.js'
 import { safeErrorCode } from './safe-error.js'
 import { RemoteSessionTools, type SessionToolOperation } from './remote-session-tools.js'
-import type { OAuthProvider } from './server-api.js'
 import { ClientServerApi, ServerApiError } from './server-api.js'
 import type { TypertGatewayLike } from './typert-gateway-contract.js'
 import { TypertGatewaySwitch } from './typert-gateway-switch.js'
@@ -148,8 +147,6 @@ export class ClientModeRuntime {
       devices: (...args) => owner.devices(...args),
       get server() { return owner.server },
       authorizeClientWithAccount: (...args) => owner.authorizeClientWithAccount(...args),
-      startClientOAuthQrLogin: (...args) => owner.startClientOAuthQrLogin(...args),
-      pollClientOAuthQrLogin: (...args) => owner.pollClientOAuthQrLogin(...args),
       activeRemote: (...args) => owner.activeRemote(...args),
       get preview() { return owner.preview },
       set preview(value) { owner.preview = value },
@@ -375,25 +372,6 @@ export class ClientModeRuntime {
     this.clientAuthRequired = false
     this.logger.info('Client account authorized')
     return authorization
-  }
-
-  async startClientOAuthQrLogin(provider: OAuthProvider): Promise<unknown> {
-    return this.server.startOAuthQrLogin(provider)
-  }
-
-  async pollClientOAuthQrLogin(qrId: string): Promise<unknown> {
-    const result = await this.server.pollOAuthQrLogin(this.requireIdentity(), qrId, async () => {
-      this.identity = await this.identities.reset(this.config.deviceName)
-      this.server.bindIdentity(this.identity)
-      this.logger.info('Rotated revoked Client identity before QR authorization retry')
-      return this.identity
-    })
-    if (result.status === 'complete') this.logger.info('Client account authorized with QR login')
-    if (result.status === 'complete') {
-      this.clientAuthRequired = false
-      await this.authorizeHostByDefault()
-    }
-    return result
   }
 
   async clearClientAuthorization(): Promise<void> {

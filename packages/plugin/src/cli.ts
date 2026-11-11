@@ -16,10 +16,6 @@ import {
   HostServerApi,
   ServerApiError,
   type DeviceAuthorization,
-  type OAuthProvider,
-  type OAuthProviderInfo,
-  type OAuthQrPollResult,
-  type OAuthQrSession,
 } from './server-api.js'
 import {
   ServerCredentialStore,
@@ -27,22 +23,11 @@ import {
   type ServerCredentials,
 } from './server-credentials.js'
 
-const QR_POLL_INTERVAL_MS = 2_000
-const TERMINAL_QR_MARGIN = 4
-
 interface CliWriter {
-  isTTY?: boolean
   write(value: string): unknown
 }
 
 interface CliHostApi {
-  oauthProviders(): Promise<OAuthProviderInfo[]>
-  startOAuthQrLogin(provider: OAuthProvider): Promise<OAuthQrSession>
-  pollOAuthQrLogin(
-    identity: HostIdentity,
-    qrId: string,
-    recoverIdentity?: () => Promise<HostIdentity>,
-  ): Promise<OAuthQrPollResult>
   bindIdentity(identity: HostIdentity): void
   authenticate(identity?: HostIdentity): Promise<ServerCredentials>
   revokeCurrentDevice(): Promise<void>
@@ -53,9 +38,6 @@ export interface RemoteCliDependencies {
   env?: NodeJS.ProcessEnv
   stdout?: CliWriter
   stderr?: CliWriter
-  now?: () => number
-  wait?: (milliseconds: number) => Promise<void>
-  renderQr?: (url: string) => Promise<string>
   createIdentityStore?: (options: IdentityStoreOptions) => IdentityStore
   createHostApi?: (serverUrl: string, store: ServerCredentialStore) => CliHostApi
 }
@@ -64,9 +46,6 @@ interface CliRuntime {
   env: NodeJS.ProcessEnv
   stdout: CliWriter
   stderr: CliWriter
-  now: () => number
-  wait: (milliseconds: number) => Promise<void>
-  renderQr: (url: string) => Promise<string>
   createIdentityStore: (options: IdentityStoreOptions) => IdentityStore
   createHostApi: (serverUrl: string, store: ServerCredentialStore) => CliHostApi
 }
@@ -79,7 +58,6 @@ export async function runCli(
   const runtime = resolveDependencies(dependencies)
   const [command, ...rest] = args
   try {
-    if (command === 'login') return await login(rest, runtime)
     if (command === 'register') return await register(rest, runtime)
     if (command === 'status') return await status(rest, runtime)
     if (command === 'logout') return await logout(rest, runtime)
@@ -106,52 +84,6 @@ async function register(args: readonly string[], runtime: CliRuntime): Promise<n
   return 0
 }
 
-async function login(args: readonly string[], runtime: CliRuntime): Promise<number> {
-  if (args.length > 1) throw new CliUsageError('Usage: dsh-remote-over-tailnet login [provider|list]')
-  const context = await hostContext(runtime)
-  const providers = (await context.api.oauthProviders()).filter(item => item.qrStartUrl != null)
-  if (args[0] === 'list') {
-    write(runtime.stdout, providers.length === 0 ? 'No QR sign-in providers are available.\n'
-      : providers.map(item => `${item.displayName}: dsh-remote-over-tailnet login ${item.id}\n`).join(''))
-    return 0
-  }
-  const selected = args[0] === undefined
-    ? providers.find(item => item.id === 'zhihu') ?? providers[0]
-    : providers.find(item => item.id === args[0])
-  if (selected === undefined) throw new CliUsageError('OAuth provider unavailable. Run "dsh-remote-over-tailnet login list" to see available providers.')
-  const provider = selected.id
-  const session = await context.api.startOAuthQrLogin(provider)
-  const qr = await runtime.renderQr(session.scanUrl)
-  write(runtime.stdout, `Using ${selected.displayName} QR login. Run "dsh-remote-over-tailnet login list" for available providers.\n`)
-  write(runtime.stdout, 'Scan this QR code to authorize this Host:\n\n')
-  write(runtime.stdout, `${qr.trimEnd()}\n`)
-  write(runtime.stdout, `Authorization URL: ${terminalLink(session.scanUrl, runtime.stdout)}\n\nWaiting for authorization...\n`)
-
-  const deadline = runtime.now() + session.expiresIn * 1_000
-  let identity = context.identity
-  while (runtime.now() < deadline) {
-    let result: OAuthQrPollResult
-    try {
-      result = await context.api.pollOAuthQrLogin(identity, session.qrId, async () => {
-        identity = await context.identities.reset(context.deviceName)
-        return identity
-      })
-    } catch (error) {
-      if (!(error instanceof ServerApiError) || !error.retryable) throw error
-      await runtime.wait(Math.min(QR_POLL_INTERVAL_MS, Math.max(1, deadline - runtime.now())))
-      continue
-    }
-    if (result.status === 'complete') {
-      write(runtime.stdout, `${authorizedMessage(result.authorization)} Restart the Harness instance to bring the Remote Host online.\n`)
-      return 0
-    }
-    if (result.status === 'expired') break
-    await runtime.wait(Math.min(QR_POLL_INTERVAL_MS, Math.max(1, deadline - runtime.now())))
-  }
-  write(runtime.stderr, 'The QR login expired. Run the login command again to generate a new code.\n')
-  return 1
-}
-
 async function status(args: readonly string[], runtime: CliRuntime): Promise<number> {
   if (args.length !== 0) throw new CliUsageError('Usage: dsh-remote-over-tailnet status')
   const serverUrl = selectedServer()
@@ -165,7 +97,7 @@ async function status(args: readonly string[], runtime: CliRuntime): Promise<num
 
   if (!await exists(join(directory, 'device.json'))) {
     lines.push('Device: not initialized', 'Authorization: logged out', 'Credential: unavailable')
-    write(runtime.stdout, `${lines.join('\n')}\n\nRun "dsh-remote-over-tailnet login" to authorize this Host.\n`)
+    write(runtime.stdout, `${lines.join('\n')}\n\nAuthorize this Host from the DeepSeek Harness plugin panel.\n`)
     return 0
   }
 
@@ -177,7 +109,7 @@ async function status(args: readonly string[], runtime: CliRuntime): Promise<num
   lines.push(`Device: ${identity.name} (${identity.deviceId})`)
   if (stored === undefined) {
     lines.push('Authorization: logged out', 'Credential: unavailable')
-    write(runtime.stdout, `${lines.join('\n')}\n\nRun "dsh-remote-over-tailnet login" to authorize this Host.\n`)
+    write(runtime.stdout, `${lines.join('\n')}\n\nAuthorize this Host from the DeepSeek Harness plugin panel.\n`)
     return 0
   }
 
@@ -296,40 +228,9 @@ function resolveDependencies(input: RemoteCliDependencies): CliRuntime {
     env: input.env ?? process.env,
     stdout: input.stdout ?? process.stdout,
     stderr: input.stderr ?? process.stderr,
-    now: input.now ?? Date.now,
-    wait: input.wait ?? (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))),
-    renderQr: input.renderQr ?? renderTerminalQr,
     createIdentityStore: input.createIdentityStore ?? (options => new IdentityStore(options)),
     createHostApi: input.createHostApi ?? ((serverUrl, store) => new HostServerApi(serverUrl, store)),
   }
-}
-
-export async function renderTerminalQr(url: string): Promise<string> {
-  // Keep the terminal-only renderer off the Host plugin startup path. Render
-  // square modules with an explicit standard four-module quiet zone so phone
-  // cameras recognize the code in narrow terminal profiles.
-  const { default: QRCode } = await import('qrcode')
-  const modules = QRCode.create(url, { errorCorrectionLevel: 'M' }).modules
-  const width = modules.size + TERMINAL_QR_MARGIN * 2
-  const quietLine = `\u001B[47m${' '.repeat(width * 2)}\u001B[0m`
-  const lines = Array.from({ length: TERMINAL_QR_MARGIN }, () => quietLine)
-
-  for (let row = 0; row < modules.size; row += 1) {
-    let line = `\u001B[47m${' '.repeat(TERMINAL_QR_MARGIN * 2)}`
-    for (let column = 0; column < modules.size; column += 1) {
-      line += modules.get(row, column) === 1 ? '\u001B[40m  ' : '\u001B[47m  '
-    }
-    line += `\u001B[47m${' '.repeat(TERMINAL_QR_MARGIN * 2)}\u001B[0m`
-    lines.push(line)
-  }
-  lines.push(...Array.from({ length: TERMINAL_QR_MARGIN }, () => quietLine))
-  return lines.join('\n')
-}
-
-function authorizedMessage(authorization: DeviceAuthorization): string {
-  return authorization.account === undefined
-    ? 'Remote Host login complete.'
-    : `Remote Host login complete for ${authorization.account}.`
 }
 
 function authorizationLabel(method: ServerCredentials['authorizationMethod']): string {
@@ -353,26 +254,19 @@ function cliErrorMessage(error: unknown): string {
 function helpText(): string {
   return [
     'Usage:',
-    '  dsh-remote-over-tailnet login [provider|list]',
     '  dsh-remote-over-tailnet register <server-token>',
     '  dsh-remote-over-tailnet status',
     '  dsh-remote-over-tailnet logout',
     '  dsh-remote-over-tailnet reset-identity [host|client|all]',
     '',
-    'login uses an available QR provider (preferring Zhihu). Use login list to see available providers.',
     `The Server is ${DEFAULT_REMOTE_SERVER_URL}.`,
-    'Host configuration is not exposed by this CLI yet. Restart the Harness instance after login or logout.',
+    'Host configuration is not exposed by this CLI yet. Restart the Harness instance after authorization changes.',
     '',
   ].join('\n')
 }
 
 function write(target: CliWriter, value: string): void {
   target.write(value)
-}
-
-function terminalLink(url: string, target: CliWriter): string {
-  if (target.isTTY !== true) return url
-  return `\u001B]8;;${url}\u0007${url}\u001B]8;;\u0007`
 }
 
 async function exists(path: string): Promise<boolean> {

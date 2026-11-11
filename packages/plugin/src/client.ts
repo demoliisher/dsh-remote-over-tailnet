@@ -618,7 +618,6 @@ window.__ModuleLoader__.load({
           statusFeed,
           subscribeOpen,
           openSettings: undefined,
-          preferredQrProvider: ctx.locale.getLocale().active === 'zh' ? 'zhihu' : 'github',
           sidebarEntry,
           portal,
         }),
@@ -638,7 +637,6 @@ window.__ModuleLoader__.load({
           control,
           statusFeed,
           onSignIn: openRemote,
-          preferredQrProvider: ctx.locale.getLocale().active === 'zh' ? 'zhihu' : 'github',
           sidebarEntry,
         }),
       }, RemotePluginOptions))
@@ -652,7 +650,6 @@ window.__ModuleLoader__.load({
           control,
           statusFeed,
           onSignIn: openRemote,
-          preferredQrProvider: ctx.locale.getLocale().active === 'zh' ? 'zhihu' : 'github',
           sidebarEntry,
         }),
       }, RemotePluginOptions))

@@ -33,7 +33,7 @@ describe('PluginControlRuntime settings setup', () => {
 
   it('keeps pairing on local Host control and refuses Host-only role escalation', async () => {
     const directory = await temporaryDirectory()
-    const settings = settingsBinding({ serverUrl: 'https://dsh.r2049.cn' })
+    const settings = settingsBinding({ serverUrl: 'https://relay.example.test' })
     const pairingControl = vi.fn(async () => ({ state: 'claimed', localSaved: false }))
     const clientControl = vi.fn(async () => ({ ok: true, value: {} }))
     const host = { hostStatus: () => ({ pairingHostOnly: true }), pairingControl } as unknown as HostAuthorizationControl
@@ -43,7 +43,7 @@ describe('PluginControlRuntime settings setup', () => {
     expect(pairingControl).toHaveBeenCalledWith('confirm', { sessionId: 'specific-session', verificationCode: '00123456' })
     expect(clientControl).not.toHaveBeenCalled()
     await expect(handler('settings.role.set', { role: 'client' }, signal())).resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'DEVICE_SCOPE_REQUIRED' } } })
-    await expect(handler('settings.configure', { role: 'client', serverUrl: 'https://dsh.r2049.cn', email: 'test@example.test', password: 'password' }, signal())).resolves.toMatchObject({ ok: false })
+    await expect(handler('settings.configure', { role: 'client', serverUrl: 'https://relay.example.test', email: 'test@example.test', password: 'password' }, signal())).resolves.toMatchObject({ ok: false })
   })
 
   it('holds login discovery until Server replacement settles and rejects overlapping saves', async () => {
@@ -87,12 +87,12 @@ describe('PluginControlRuntime settings setup', () => {
   it('finishes both roles and credential cleanup in one shared sign-out even when one revocation fails', async () => {
     await runScenarios((['client', 'host'] as const).map(failingRole => ({ name: failingRole, run: async () => {
       const directory = await temporaryDirectory()
-      const settings = settingsBinding({ serverUrl: 'https://dsh.r2049.cn' })
+      const settings = settingsBinding({ serverUrl: 'https://relay.example.test' })
       const stores = (['client', 'host'] as const).map(role => new ServerCredentialStore(
-        serverStorageDirectory(directory, 'https://dsh.r2049.cn', role),
+        serverStorageDirectory(directory, 'https://relay.example.test', role),
       ))
       for (const store of stores) await store.save({
-        serverUrl: 'https://dsh.r2049.cn', deviceId: 'old-device', authorizationMethod: 'account', ...tokens(),
+        serverUrl: 'https://relay.example.test', deviceId: 'old-device', authorizationMethod: 'account', ...tokens(),
       })
       let release!: () => void
       let started!: () => void
@@ -117,7 +117,7 @@ describe('PluginControlRuntime settings setup', () => {
       for (const result of await Promise.all([first, second])) expect(result).toMatchObject({ ok: false })
       expect(client.clearClientAuthorization).toHaveBeenCalledOnce()
       expect(host.clearHostAuthorization).toHaveBeenCalledOnce()
-      for (const store of stores) await expect(store.load('https://dsh.r2049.cn', 'old-device')).resolves.toBeUndefined()
+      for (const store of stores) await expect(store.load('https://relay.example.test', 'old-device')).resolves.toBeUndefined()
       await expect(handler('settings.get', {}, signal())).resolves.toMatchObject({ ok: true, value: { associations: {} } })
     } })))
   })
@@ -259,7 +259,7 @@ describe('PluginControlRuntime settings setup', () => {
       authorizeHostWithCode: vi.fn(),
     } satisfies HostAuthorizationControl
     const handler = register(new PluginControlRuntime(
-      resolveConfig({ serverUrl: 'https://dsh.r2049.cn' }), '/unused', undefined, undefined, host,
+      resolveConfig({ serverUrl: 'https://relay.example.test' }), '/unused', undefined, undefined, host,
     ))
 
     await expect(handler('host.reconnect', {}, signal())).resolves.toMatchObject({
@@ -302,7 +302,7 @@ describe('PluginControlRuntime settings setup', () => {
 
     const result = await handler('settings.configure', {
       role: 'host',
-      serverUrl: 'https://dsh.r2049.cn/',
+      serverUrl: 'https://relay.example.test/',
       email: 'host@example.com',
       password: 'correct horse battery staple',
     }, signal())
@@ -316,7 +316,7 @@ describe('PluginControlRuntime settings setup', () => {
         settings: { association: { method: 'account', account: 'host@example.com' } },
       },
     })
-    expect(settings.get()).toMatchObject({ role: 'host', serverUrl: 'https://dsh.r2049.cn' })
+    expect(settings.get()).toMatchObject({ role: 'host', serverUrl: 'https://relay.example.test' })
     expect(settings.get()).not.toHaveProperty('deviceName')
     expect(JSON.parse(String(calls[1]?.init?.body))).toMatchObject({ device: { name: hostname(), role: 'host' } })
     expect(JSON.stringify(settings.get())).not.toContain('correct horse battery staple')
@@ -333,11 +333,11 @@ describe('PluginControlRuntime settings setup', () => {
       },
     })
     expect(calls).toHaveLength(3)
-    expect(calls[2]?.url).toBe('https://dsh.r2049.cn/api/v1/devices/register-owned-role')
+    expect(calls[2]?.url).toBe('https://relay.example.test/api/v1/devices/register-owned-role')
     expect(calls[2]?.init?.headers).toMatchObject({ Authorization: 'Bearer access-token-value' })
     expect(JSON.parse(String(calls[2]?.init?.body))).toMatchObject({ device: { role: 'client' } })
-    const hostDirectory = serverStorageDirectory(directory, 'https://dsh.r2049.cn', 'host')
-    const clientDirectory = serverStorageDirectory(directory, 'https://dsh.r2049.cn', 'client')
+    const hostDirectory = serverStorageDirectory(directory, 'https://relay.example.test', 'host')
+    const clientDirectory = serverStorageDirectory(directory, 'https://relay.example.test', 'client')
     await expect(readFile(join(hostDirectory, 'server-credentials.json'), 'utf8')).resolves.toContain('host@example.com')
     await expect(readFile(join(clientDirectory, 'server-credentials.json'), 'utf8')).resolves.toContain('owned_device')
     await expect(handler('settings.role.set', { role: 'host' }, signal())).resolves.toMatchObject({
@@ -376,7 +376,7 @@ describe('PluginControlRuntime settings setup', () => {
 
     const configured = await handler('settings.configure', {
       role: 'client',
-      serverUrl: 'https://dsh.r2049.cn',
+      serverUrl: 'https://relay.example.test',
       email: 'client@example.com',
       password: 'correct horse battery staple',
     }, signal())
@@ -390,7 +390,7 @@ describe('PluginControlRuntime settings setup', () => {
       },
     })
     expect(JSON.parse(String(calls[1]?.init?.body))).toMatchObject({ device: { name: hostname(), role: 'client' } })
-    const clientDirectory = serverStorageDirectory(directory, 'https://dsh.r2049.cn', 'client')
+    const clientDirectory = serverStorageDirectory(directory, 'https://relay.example.test', 'client')
     const stored = await readFile(join(clientDirectory, 'server-credentials.json'), 'utf8')
     expect(stored).toContain('client@example.com')
     expect(stored).not.toContain('correct horse battery staple')
@@ -411,7 +411,7 @@ describe('PluginControlRuntime settings setup', () => {
 
     const configured = await handler('settings.configure', {
       role: 'host',
-      serverUrl: 'https://dsh.r2049.cn',
+      serverUrl: 'https://relay.example.test',
       registrationCode: 'ABCD-EFGH',
     }, signal())
 
@@ -423,7 +423,7 @@ describe('PluginControlRuntime settings setup', () => {
         settings: { association: { method: 'host_registration_code' } },
       },
     })
-    expect(calls[0]?.url).toBe('https://dsh.r2049.cn/api/v1/devices/register-with-code')
+    expect(calls[0]?.url).toBe('https://relay.example.test/api/v1/devices/register-with-code')
     expect(JSON.parse(String(calls[0]?.init?.body))).toMatchObject({
       code: 'ABCD-EFGH',
       device: { name: hostname(), role: 'host' },
@@ -436,7 +436,7 @@ describe('PluginControlRuntime settings setup', () => {
         association: { method: 'owned_device' },
       },
     })
-    expect(calls[1]?.url).toBe('https://dsh.r2049.cn/api/v1/devices/register-owned-role')
+    expect(calls[1]?.url).toBe('https://relay.example.test/api/v1/devices/register-owned-role')
     expect(calls[1]?.init?.headers).toMatchObject({ Authorization: 'Bearer access-token-value' })
     expect(JSON.parse(String(calls[1]?.init?.body))).toMatchObject({
       device: { name: hostname(), role: 'client' },
@@ -444,7 +444,7 @@ describe('PluginControlRuntime settings setup', () => {
   })
   it('surfaces startup failure in status and settings without disabling control plane', async () => {
     const root = await temporaryDirectory()
-    const settings = settingsBinding({ serverUrl: 'https://dsh.r2049.cn' })
+    const settings = settingsBinding({ serverUrl: 'https://relay.example.test' })
     const control = new PluginControlRuntime(resolveConfig(settings.get()), root, settings, undefined, undefined)
     const handler = register(control)
 
@@ -478,7 +478,7 @@ describe('PluginControlRuntime settings setup', () => {
 
   it('resets identity, validates role payload, and preserves startupError if restart still fails', async () => {
     const root = await temporaryDirectory()
-    const serverUrl = 'https://dsh.r2049.cn'
+    const serverUrl = 'https://relay.example.test'
     const settings = settingsBinding({ serverUrl })
     let shouldFailRestart = true
     const switchServer = vi.fn(async () => {
@@ -529,7 +529,7 @@ describe('PluginControlRuntime settings setup', () => {
 
   it('tolerates corrupt identity or credentials in settingsView without throwing or creating files', async () => {
     const root = await temporaryDirectory()
-    const serverUrl = 'https://dsh.r2049.cn'
+    const serverUrl = 'https://relay.example.test'
     const settings = settingsBinding({ serverUrl })
     const hostDir = serverStorageDirectory(root, serverUrl, 'host')
     const clientDir = serverStorageDirectory(root, serverUrl, 'client')

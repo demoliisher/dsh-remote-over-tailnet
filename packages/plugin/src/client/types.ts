@@ -154,20 +154,6 @@ export interface RemoteDevice {
   harnessVersion?: string
 }
 
-export interface OAuthQrSession {
-  qrId: string
-  scanUrl: string
-  expiresIn: number
-}
-
-export type OAuthProvider = string
-
-export type LoginMethod = `oauth:${string}` | 'password'
-
-export interface OAuthQrPollResult {
-  status: 'pending' | 'expired' | 'complete'
-}
-
 interface RemoteDirectoryEntry {
   name: string
   path: string

@@ -17,7 +17,6 @@ import type { CodexVirtualWorkspaceView } from './codex/virtual-harness.js'
 import type { RemoteFileViewerEndpoint } from './file-viewer-contract.js'
 import { LoopbackPreview } from './loopback-preview.js'
 import { isAllowedPluginRoute } from './plugin-route-bridge.js'
-import type { OAuthProvider } from './server-api.js'
 import { ClientServerApi } from './server-api.js'
 
 /** Collaborates with one ClientModeRuntime; never creates a second session or connection state. */
@@ -26,8 +25,6 @@ export interface ClientControlContext {
   readonly devices: () => Promise<RemoteDeviceView[]>
   readonly server: ClientServerApi
   readonly authorizeClientWithAccount: (email: string, password: string) => Promise<unknown>
-  readonly startClientOAuthQrLogin: (provider: OAuthProvider) => Promise<unknown>
-  readonly pollClientOAuthQrLogin: (qrId: string) => Promise<unknown>
   readonly activeRemote: () => ConnectedRemote | undefined
   preview: LoopbackPreview | undefined
   readonly listRemoteDirectory: (targetDeviceId: string, path?: string, signal?: AbortSignal) => Promise<RemoteDirectoryListing>
@@ -63,7 +60,6 @@ export class ClientControl {
         return ok({ hasCredentials: await this.context.server.hasStoredAuthorization() })
       }
       if (endpoint === 'devices') return ok(await this.context.devices())
-      if (endpoint === 'client.account.providers') return ok(await this.context.server.oauthProviders())
       if (endpoint === 'client.account.login') {
         const value = record(payload)
         if (typeof value.email !== 'string' || typeof value.password !== 'string') {
@@ -71,21 +67,7 @@ export class ClientControl {
         }
         return ok(await this.context.authorizeClientWithAccount(value.email, value.password))
       }
-      if (endpoint === 'client.account.qr.start') {
-        const value = record(payload)
-        const provider = value.provider ?? 'zhihu'
-        if (typeof provider !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(provider)) {
-          throw new ClientModeError('INVALID_MESSAGE', 'An OAuth provider ID is required.')
-        }
-        return ok(await this.context.startClientOAuthQrLogin(provider))
-      }
-      if (endpoint === 'client.account.qr.poll') {
-        const value = record(payload)
-        if (typeof value.qrId !== 'string' || value.qrId.length < 20) {
-          throw new ClientModeError('INVALID_MESSAGE', 'A QR login session is required.')
-        }
-        return ok(await this.context.pollClientOAuthQrLogin(value.qrId))
-      }
+
       if (endpoint === 'preview.open') {
         const remote = this.context.activeRemote()
         if (remote === undefined) throw new ClientModeError('TRANSPORT_CLOSED', 'Connect to a Remote Host first.')

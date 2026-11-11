@@ -41,7 +41,7 @@ describe('HostServerApi', () => {
       const api = new HostServerApi('https://example.invalid', new ServerCredentialStore(directory), fetchMock)
       if (scenario.timeout) vi.useFakeTimers()
       try {
-        const rejected = expect(api.oauthProviders()).rejects.toMatchObject({
+        const rejected = expect(api.listDevices()).rejects.toMatchObject({
           code: scenario.timeout ? 'CONNECTION_FAILED' : 'CONNECTION_CLOSED',
           retryable: scenario.timeout,
         })
@@ -51,7 +51,7 @@ describe('HostServerApi', () => {
         await rejected
         expect(requestSignal?.aborted).toBe(true)
         api.close()
-        await expect(api.oauthProviders()).rejects.toMatchObject({ code: 'CONNECTION_CLOSED', retryable: false })
+        await expect(api.listDevices()).rejects.toMatchObject({ code: 'CONNECTION_CLOSED', retryable: false })
         expect(fetchMock).toHaveBeenCalledTimes(1)
       } finally {
         api.close()
@@ -59,171 +59,6 @@ describe('HostServerApi', () => {
       }
     } })))
   })
-  it('enables device pairing only for an explicit supported server capability', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'dsh-pairing-discovery-'))
-    directories.push(directory)
-    for (const capability of [undefined, false, 'dsh-pairing-v2', 'dsh-pairing-v1']) {
-      const api = new HostServerApi('https://dsh.r2049.cn', new ServerCredentialStore(directory),
-        vi.fn(async () => json({ items: [], capabilities: { devicePairing: capability } })) as unknown as typeof fetch)
-      expect((await api.oauthProviders()).some(item => item.devicePairing === true)).toBe(capability === 'dsh-pairing-v1')
-    }
-  })
-
-  it('discovers future providers and uses their advertised QR entry without account credentials', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'dsh-oauth-discovery-'))
-    directories.push(directory)
-    const provider = { ...oauthProvider('future-provider'), displayName: 'Future Provider',
-      qrStartUrl: '/api/v1/auth/oauth/future/qr/start?mode=desktop' }
-    const fetchMock = vi.fn(async (input, init) => {
-      expect(init?.headers).not.toHaveProperty('Authorization')
-      if (String(input).endsWith('/oauth/providers')) return json({ items: [provider], futureField: true })
-      expect(String(input)).toBe(`https://dsh.r2049.cn${provider.qrStartUrl}`)
-      expect(init?.method).toBe('POST')
-      return json({ qrId: 'future-qr-session-1234567890', scanUrl: 'https://dsh.r2049.cn/api/v1/auth/q/future', expiresIn: 600, provider: provider.id })
-    }) as unknown as typeof fetch
-    const api = new HostServerApi('https://dsh.r2049.cn', new ServerCredentialStore(directory), fetchMock)
-    expect(await api.oauthProviders()).toEqual([provider])
-    await expect(api.startOAuthQrLogin(provider.id)).resolves.toMatchObject({ expiresIn: 600 })
-    await expect(api.startOAuthQrLogin('unlisted')).rejects.toMatchObject({ code: 'OAUTH_PROVIDER_UNAVAILABLE' })
-  })
-
-  it('rejects unsafe discovery and mismatched future-provider QR sessions', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'dsh-oauth-discovery-invalid-'))
-    directories.push(directory)
-    const valid = oauthProvider('future-provider')
-    await runScenarios([
-      { name: 'external entry', provider: { ...valid, qrStartUrl: 'https://evil.example/start' } },
-      { name: 'protocol-relative entry', provider: { ...valid, startUrl: '//evil.example/start' } },
-      { name: 'traversal entry', provider: { ...valid, qrStartUrl: '/api/v1/auth/../devices' } },
-      { name: 'encoded traversal', provider: { ...valid, qrStartUrl: '/api/v1/auth/%2e%2e/devices' } },
-      { name: 'control character in name', provider: { ...valid, displayName: 'Future\u001b[31m' } },
-      { name: 'invalid ID', provider: { ...valid, id: 'future&provider=github' } },
-      { name: 'mismatched QR provider', provider: valid },
-    ].map(scenario => ({ name: scenario.name, run: async () => {
-      const fetchMock = vi.fn(async input => String(input).endsWith('/oauth/providers')
-        ? json({ items: [scenario.provider] })
-        : json({ qrId: 'future-qr-session-1234567890', scanUrl: 'https://dsh.r2049.cn/api/v1/auth/q/future', expiresIn: 600, provider: 'github' })) as unknown as typeof fetch
-      const api = new HostServerApi('https://dsh.r2049.cn', new ServerCredentialStore(directory), fetchMock)
-      await expect(api.startOAuthQrLogin('future-provider')).rejects.toMatchObject({ code: 'INVALID_MESSAGE' })
-    } })))
-  })
-
-  it('falls back to configured legacy providers only when discovery is absent', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'dsh-oauth-legacy-'))
-    directories.push(directory)
-    const fetchMock = vi.fn(async input => {
-      const path = String(input)
-      if (path.endsWith('/oauth/providers')) return json({}, 404)
-      if (path.endsWith('/oauth/github/status')) return json({ configured: true })
-      if (path.endsWith('/oauth/status')) return json({ configured: false })
-      throw new Error(`Unexpected request: ${path}`)
-    }) as unknown as typeof fetch
-    const api = new HostServerApi('https://dsh.r2049.cn', new ServerCredentialStore(directory), fetchMock)
-    expect(await api.oauthProviders()).toEqual([oauthProvider('github')])
-  })
-
-  it('starts a GitHub QR login through the provider-aware Server endpoint', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'dsh-server-github-qr-'))
-    directories.push(directory)
-    const fetchMock = vi.fn(async input => String(input).endsWith('/oauth/providers') ? json({ items: [oauthProvider('github')] }) : json({
-      qrId: 'github-qr-session-1234567890',
-      scanUrl: 'HTTPS://DSH.R2049.CN:443/api/v1/auth/q/github-qr-session-1234567890',
-      expiresIn: 600,
-      provider: 'github',
-    })) as unknown as typeof fetch
-    const api = new HostServerApi(
-      'https://dsh.r2049.cn',
-      new ServerCredentialStore(directory),
-      fetchMock,
-    )
-
-    await expect(api.startOAuthQrLogin('github')).resolves.toMatchObject({
-      qrId: 'github-qr-session-1234567890',
-      scanUrl: 'https://dsh.r2049.cn/api/v1/auth/q/github-qr-session-1234567890',
-      expiresIn: 600,
-    })
-    expect(String(vi.mocked(fetchMock).mock.calls[1]?.[0])).toBe(
-      'https://dsh.r2049.cn/api/v1/auth/oauth/qr/start?provider=github',
-    )
-  })
-
-  it('rejects QR login URLs containing terminal control characters', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'dsh-server-unsafe-qr-'))
-    directories.push(directory)
-    const fetchMock = vi.fn(async input => String(input).endsWith('/oauth/providers') ? json({ items: [oauthProvider('github')] }) : json({
-      qrId: 'github-qr-session-1234567890',
-      scanUrl: 'https://dsh.r2049.cn/api/v1/auth/q/qr\u001b]8;;https://evil.example\u0007',
-      expiresIn: 600,
-      provider: 'github',
-    })) as unknown as typeof fetch
-    const api = new HostServerApi(
-      'https://dsh.r2049.cn',
-      new ServerCredentialStore(directory),
-      fetchMock,
-    )
-
-    await expect(api.startOAuthQrLogin('github')).rejects.toMatchObject({
-      code: 'INVALID_MESSAGE',
-      retryable: false,
-    })
-  })
-
-  it('retries a completed QR login with a recovered device identity', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'dsh-server-qr-revoked-'))
-    directories.push(directory)
-    const qrId = 'qr-complete-session-1234567890'
-    const identity = hostIdentity()
-    const recoveredIdentity: HostIdentity = {
-      ...identity,
-      deviceId: '0198a2d0-0000-7000-8000-000000000002',
-      fingerprint: '1111 1111 1111',
-      ...generateKeyPair(new Uint8Array(32).fill(8)),
-    }
-    const calls: Array<{ url: string; init?: RequestInit }> = []
-    let registerCalls = 0
-    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const url = String(input)
-      calls.push({ url, init })
-      if (url.endsWith(`/auth/oauth/qr/${qrId}`)) return json({
-        status: 'complete',
-        token: 'web-account-token-value',
-      })
-      if (url.endsWith('/auth/me')) return json({
-        account: 'client@example.com',
-        isAdmin: false,
-      })
-      if (url.endsWith('/devices/register')) {
-        registerCalls += 1
-        if (registerCalls === 1) return errorJson('DEVICE_REVOKED', 'device was revoked', 403)
-        return json(tokens({ accessToken: 'client-access-token-value', refreshToken: 'client-refresh-token-value' }))
-      }
-      throw new Error(`unexpected request: ${url}`)
-    }) as unknown as typeof fetch
-    const store = new ServerCredentialStore(directory)
-    const api = new ClientServerApi('https://dsh.r2049.cn', store, fetchMock)
-    const recoverIdentity = vi.fn(async () => recoveredIdentity)
-
-    await expect(api.pollOAuthQrLogin(identity, qrId, recoverIdentity)).resolves.toEqual({
-      status: 'complete',
-      authorization: { method: 'account', account: 'client@example.com', isAdmin: false },
-    })
-
-    expect(recoverIdentity).toHaveBeenCalledTimes(1)
-    expect(JSON.parse(String(calls[2]?.init?.body))).toMatchObject({
-      device: { deviceId: identity.deviceId, role: 'client', identityKey: identity.publicKey },
-    })
-    expect(JSON.parse(String(calls[3]?.init?.body))).toMatchObject({
-      device: { deviceId: recoveredIdentity.deviceId, role: 'client', identityKey: recoveredIdentity.publicKey },
-    })
-    expect(calls[2]?.init?.headers).toMatchObject({ Authorization: 'Bearer web-account-token-value' })
-    expect(calls[3]?.init?.headers).toMatchObject({ Authorization: 'Bearer web-account-token-value' })
-    await expect(store.load('https://dsh.r2049.cn', recoveredIdentity.deviceId)).resolves.toMatchObject({
-      authorizationMethod: 'account',
-      account: 'client@example.com',
-      accessToken: 'client-access-token-value',
-    })
-  })
-
   it('retries account login with a recovered Host identity after device removal', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'dsh-server-account-revoked-'))
     directories.push(directory)
@@ -252,7 +87,7 @@ describe('HostServerApi', () => {
       }
       throw new Error(`unexpected request: ${url}`)
     }) as unknown as typeof fetch
-    const api = new HostServerApi('https://dsh.r2049.cn', new ServerCredentialStore(directory), fetchMock)
+    const api = new HostServerApi('https://relay.example.test', new ServerCredentialStore(directory), fetchMock)
     const recoverIdentity = vi.fn(async () => recoveredIdentity)
 
     await expect(api.authorizeWithAccount(identity, 'host@example.com', 'correct horse battery staple', recoverIdentity))
@@ -264,7 +99,7 @@ describe('HostServerApi', () => {
     expect(JSON.parse(String(vi.mocked(fetchMock).mock.calls[2]?.[1]?.body))).toMatchObject({
       device: { deviceId: recoveredIdentity.deviceId },
     })
-    await expect(new ServerCredentialStore(directory).load('https://dsh.r2049.cn', recoveredIdentity.deviceId))
+    await expect(new ServerCredentialStore(directory).load('https://relay.example.test', recoveredIdentity.deviceId))
       .resolves.toMatchObject({ accessToken: 'recovered-access-token-value' })
   })
 
@@ -301,19 +136,19 @@ describe('HostServerApi', () => {
               throw new Error(`unexpected request: ${url}`)
             }) as unknown as typeof fetch
             const store = new ServerCredentialStore(directory)
-            const api = new HostServerApi('https://dsh.r2049.cn/', store, fetchMock)
+            const api = new HostServerApi('https://relay.example.test/', store, fetchMock)
             api.setHarnessVersion('0.1.0-rc.8')
             const identity = hostIdentity()
 
             await api.authorizeWithAccount(identity, 'host@example.com', 'correct horse battery staple')
             await api.deviceFor('client-1')
 
-            expect(calls[0]?.url).toBe('https://dsh.r2049.cn/api/v1/auth/login')
+            expect(calls[0]?.url).toBe('https://relay.example.test/api/v1/auth/login')
             expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
               email: 'host@example.com',
               password: 'correct horse battery staple',
             })
-            expect(calls[1]?.url).toBe('https://dsh.r2049.cn/api/v1/devices/register')
+            expect(calls[1]?.url).toBe('https://relay.example.test/api/v1/devices/register')
             expect(calls[1]?.init?.headers).toMatchObject({ Authorization: 'Bearer web-account-token-value' })
             const registeredDevice = JSON.parse(String(calls[1]?.init?.body))
             expect(registeredDevice).toMatchObject({
@@ -330,7 +165,7 @@ describe('HostServerApi', () => {
               expect((await stat(join(directory, 'server-credentials.json'))).mode & 0o777).toBe(0o600)
             }
 
-            const reloaded = new HostServerApi('https://dsh.r2049.cn', store, fetchMock)
+            const reloaded = new HostServerApi('https://relay.example.test', store, fetchMock)
             await reloaded.authenticate(identity)
             expect(fetchMock).toHaveBeenCalledTimes(3)
             expect(reloaded.currentAuthorization()).toMatchObject({
@@ -346,7 +181,7 @@ describe('HostServerApi', () => {
             directories.push(directory)
             const fetchMock = vi.fn(async () => json(tokens())) as unknown as typeof fetch
             const store = new ServerCredentialStore(directory)
-            const api = new HostServerApi('https://dsh.r2049.cn', store, fetchMock)
+            const api = new HostServerApi('https://relay.example.test', store, fetchMock)
             api.setHarnessVersion('0.1.0-rc.8')
             const identity = hostIdentity()
 
@@ -355,7 +190,7 @@ describe('HostServerApi', () => {
             })
 
             expect(String(vi.mocked(fetchMock).mock.calls[0]?.[0])).toBe(
-              'https://dsh.r2049.cn/api/v1/devices/register-with-code',
+              'https://relay.example.test/api/v1/devices/register-with-code',
             )
             expect(JSON.parse(String(vi.mocked(fetchMock).mock.calls[0]?.[1]?.body))).toMatchObject({
               code: 'ABCD-EFGH',
@@ -366,7 +201,7 @@ describe('HostServerApi', () => {
                 harnessVersion: '0.1.0-rc.8',
               },
             })
-            await expect(store.load('https://dsh.r2049.cn', identity.deviceId)).resolves.toMatchObject({
+            await expect(store.load('https://relay.example.test', identity.deviceId)).resolves.toMatchObject({
               authorizationMethod: 'host_registration_code',
             })
           },
@@ -378,7 +213,7 @@ describe('HostServerApi', () => {
             directories.push(directory)
             const fetchMock = vi.fn(async () => json(tokens())) as unknown as typeof fetch
             const store = new ServerCredentialStore(directory)
-            const api = new ClientServerApi('https://dsh.r2049.cn', store, fetchMock)
+            const api = new ClientServerApi('https://relay.example.test', store, fetchMock)
             api.setHarnessVersion('0.1.0-rc.8')
             const identity = hostIdentity()
 
@@ -390,7 +225,7 @@ describe('HostServerApi', () => {
             })
 
             expect(String(vi.mocked(fetchMock).mock.calls[0]?.[0])).toBe(
-              'https://dsh.r2049.cn/api/v1/devices/register-owned-role',
+              'https://relay.example.test/api/v1/devices/register-owned-role',
             )
             expect(vi.mocked(fetchMock).mock.calls[0]?.[1]?.headers).toMatchObject({
               Authorization: 'Bearer authorizing-device-token',
@@ -400,7 +235,7 @@ describe('HostServerApi', () => {
               device: { deviceId: identity.deviceId, role: 'client' },
             })
             expect(registeredDevice.device).not.toHaveProperty('harnessVersion')
-            await expect(store.load('https://dsh.r2049.cn', identity.deviceId)).resolves.toMatchObject({
+            await expect(store.load('https://relay.example.test', identity.deviceId)).resolves.toMatchObject({
               authorizationMethod: 'owned_device',
               account: 'owner@example.com',
             })
@@ -419,24 +254,24 @@ describe('HostServerApi', () => {
     const identity = hostIdentity()
     const store = new ServerCredentialStore(directory)
     await store.save({
-      serverUrl: 'https://dsh.r2049.cn',
+      serverUrl: 'https://relay.example.test',
       deviceId: identity.deviceId,
       authorizationMethod: 'account',
       account: 'owner@example.com',
       ...tokens(),
     })
     const fetchMock = vi.fn(async () => json({ deviceId: identity.deviceId })) as unknown as typeof fetch
-    const api = new HostServerApi('https://dsh.r2049.cn', store, fetchMock)
+    const api = new HostServerApi('https://relay.example.test', store, fetchMock)
     api.bindIdentity(identity)
 
     await api.revokeCurrentDevice()
 
-    expect(String(vi.mocked(fetchMock).mock.calls[0]?.[0])).toBe('https://dsh.r2049.cn/api/v1/devices/self')
+    expect(String(vi.mocked(fetchMock).mock.calls[0]?.[0])).toBe('https://relay.example.test/api/v1/devices/self')
     expect(vi.mocked(fetchMock).mock.calls[0]?.[1]).toMatchObject({
       method: 'DELETE',
       headers: { Authorization: 'Bearer access-token-value' },
     })
-    await expect(store.load('https://dsh.r2049.cn', identity.deviceId)).resolves.toBeUndefined()
+    await expect(store.load('https://relay.example.test', identity.deviceId)).resolves.toBeUndefined()
   })
 
   it('reports account authorization when a fresh Host cannot register anonymously', async () => {
@@ -445,7 +280,7 @@ describe('HostServerApi', () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       error: { code: 'ACCOUNT_AUTH_REQUIRED', message: 'host registration requires account login', retryable: false },
     }), { status: 401, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch
-    const api = new HostServerApi('https://dsh.r2049.cn', new ServerCredentialStore(directory), fetchMock)
+    const api = new HostServerApi('https://relay.example.test', new ServerCredentialStore(directory), fetchMock)
 
     await expect(api.authenticate(hostIdentity())).rejects.toMatchObject({ code: 'ACCOUNT_AUTH_REQUIRED', retryable: false })
   })
@@ -528,12 +363,12 @@ describe('HostServerApi', () => {
       const identity = hostIdentity()
       const store = new ServerCredentialStore(directory)
       await store.save({
-        serverUrl: 'https://dsh.r2049.cn',
+        serverUrl: 'https://relay.example.test',
         deviceId: identity.deviceId,
         authorizationMethod: 'account',
         ...tokens(scenario.expiredAccess ? { accessTokenExpiresAt: Date.now() - 1 } : {}),
       })
-      const api = new ClientServerApi('https://dsh.r2049.cn', store, vi.fn(async () => {
+      const api = new ClientServerApi('https://relay.example.test', store, vi.fn(async () => {
         if (scenario.response instanceof Error) throw scenario.response
         return scenario.response.clone()
       }) as unknown as typeof fetch)
@@ -541,7 +376,7 @@ describe('HostServerApi', () => {
       await expect(api.listDevices()).rejects.toMatchObject({
         code: scenario.code, ...('retryable' in scenario ? { retryable: scenario.retryable } : {}),
       })
-      await expect(store.load('https://dsh.r2049.cn', identity.deviceId)).resolves.toMatchObject({
+      await expect(store.load('https://relay.example.test', identity.deviceId)).resolves.toMatchObject({
         accessToken: 'access-token-value',
         refreshToken: 'refresh-token-value',
       })
@@ -559,7 +394,7 @@ describe('HostServerApi', () => {
             const identity = hostIdentity()
             const store = new ServerCredentialStore(directory)
             await store.save({
-              serverUrl: 'https://dsh.r2049.cn',
+              serverUrl: 'https://relay.example.test',
               deviceId: identity.deviceId,
               authorizationMethod: 'account',
               account: 'host@example.com',
@@ -568,12 +403,12 @@ describe('HostServerApi', () => {
             const fetchMock = vi.fn(async () =>
               json(tokens({ accessToken: 'rotated-access-value', refreshToken: 'rotated-refresh-value' })),
             ) as unknown as typeof fetch
-            const api = new HostServerApi('https://dsh.r2049.cn', store, fetchMock)
+            const api = new HostServerApi('https://relay.example.test', store, fetchMock)
 
             await expect(api.authenticate(identity)).resolves.toMatchObject({
               accessToken: 'rotated-access-value',
             })
-            await expect(store.load('https://dsh.r2049.cn', identity.deviceId)).resolves.toMatchObject({
+            await expect(store.load('https://relay.example.test', identity.deviceId)).resolves.toMatchObject({
               account: 'host@example.com',
             })
             expect(JSON.parse(String(vi.mocked(fetchMock).mock.calls[0]?.[1]?.body))).toMatchObject({
@@ -590,7 +425,7 @@ describe('HostServerApi', () => {
             const identity = hostIdentity()
             const store = new ServerCredentialStore(directory)
             await store.save({
-              serverUrl: 'https://dsh.r2049.cn',
+              serverUrl: 'https://relay.example.test',
               deviceId: identity.deviceId,
               authorizationMethod: 'owned_device',
               ...tokens({ accessTokenExpiresAt: Date.now() - 1 }),
@@ -601,9 +436,9 @@ describe('HostServerApi', () => {
                 tokens({ accessToken: 'rotated-access-value', refreshToken: 'rotated-refresh-value' }),
               )
             }) as unknown as typeof fetch
-            const first = new HostServerApi('https://dsh.r2049.cn', store, fetchMock)
+            const first = new HostServerApi('https://relay.example.test', store, fetchMock)
             const second = new HostServerApi(
-              'https://dsh.r2049.cn',
+              'https://relay.example.test',
               new ServerCredentialStore(directory),
               fetchMock,
             )
@@ -624,7 +459,7 @@ describe('HostServerApi', () => {
             const identity = hostIdentity()
             const store = new ServerCredentialStore(directory)
             await store.save({
-              serverUrl: 'https://dsh.r2049.cn',
+              serverUrl: 'https://relay.example.test',
               deviceId: identity.deviceId,
               authorizationMethod: 'account',
               ...tokens({ accessTokenExpiresAt: Date.now() - 1 }),
@@ -635,7 +470,7 @@ describe('HostServerApi', () => {
                 tokens({ accessToken: 'rotated-access-value', refreshToken: 'rotated-refresh-value' }),
               )
             }) as unknown as typeof fetch
-            const api = new HostServerApi('https://dsh.r2049.cn', store, fetchMock)
+            const api = new HostServerApi('https://relay.example.test', store, fetchMock)
             api.bindIdentity(identity)
             const results = await Promise.all([
               api.refreshCredentials('access-token-value'),
@@ -654,7 +489,7 @@ describe('HostServerApi', () => {
             const identity = hostIdentity()
             const store = new ServerCredentialStore(directory)
             await store.save({
-              serverUrl: 'https://dsh.r2049.cn',
+              serverUrl: 'https://relay.example.test',
               deviceId: identity.deviceId,
               authorizationMethod: 'account',
               ...tokens({ accessTokenExpiresAt: Date.now() - 1 }),
@@ -662,7 +497,7 @@ describe('HostServerApi', () => {
             const fetchMock = vi.fn(async () =>
               errorJson('AUTH_INVALID', 'refresh token reuse detected', 401),
             ) as unknown as typeof fetch
-            const api = new HostServerApi('https://dsh.r2049.cn', store, fetchMock)
+            const api = new HostServerApi('https://relay.example.test', store, fetchMock)
             await expect(api.authenticate(identity)).rejects.toMatchObject({
               code: 'AUTH_INVALID',
               phase: 'credential_refresh',
@@ -696,7 +531,7 @@ describe('HostServerApi', () => {
       return json(tokens())
     }) as unknown as typeof fetch
     const identity = hostIdentity()
-    const api = new ClientServerApi('https://dsh.r2049.cn', new ServerCredentialStore(directory), fetchMock)
+    const api = new ClientServerApi('https://relay.example.test', new ServerCredentialStore(directory), fetchMock)
 
     await api.authorizeWithAccount(identity, 'client@example.com', 'correct horse battery staple')
 
@@ -706,11 +541,6 @@ describe('HostServerApi', () => {
     expect(vi.mocked(fetchMock).mock.calls[1]?.[1]?.headers).toMatchObject({ Authorization: 'Bearer web-account-token-value' })
   })
 })
-
-function oauthProvider(id: string) {
-  return { id, displayName: id === 'github' ? 'GitHub' : id,
-    startUrl: `/api/v1/auth/oauth/${id}/start`, qrStartUrl: `/api/v1/auth/oauth/qr/start?provider=${id}` }
-}
 
 function hostIdentity(): HostIdentity {
   const keys = generateKeyPair(new Uint8Array(32).fill(9))
@@ -758,17 +588,17 @@ it('preserves credentials through gateway failures and recovers on the next atte
       directories.push(directory)
       const identity = hostIdentity()
       const store = new ServerCredentialStore(directory)
-      const initial = await store.save({ serverUrl: 'https://dsh.r2049.cn', deviceId: identity.deviceId,
+      const initial = await store.save({ serverUrl: 'https://relay.example.test', deviceId: identity.deviceId,
         authorizationMethod: 'account', ...tokens({ accessTokenExpiresAt: Date.now() - 1 }) })
       const fetchMock = vi.fn()
         .mockResolvedValueOnce(new Response('<html>gateway unavailable</html>', { status }))
         .mockResolvedValueOnce(json(tokens({ refreshToken: 'recovered-refresh-value' })))
-      const api = new HostServerApi('https://dsh.r2049.cn', store, fetchMock)
+      const api = new HostServerApi('https://relay.example.test', store, fetchMock)
       await expect(api.authenticate(identity)).rejects.toMatchObject({
         code: status === 429 ? 'RATE_LIMITED' : 'CONNECTION_FAILED', status,
         retryable: true, phase: 'credential_refresh', reason: 'invalid_json',
       })
-      expect(await store.load('https://dsh.r2049.cn', identity.deviceId)).toEqual(initial)
+      expect(await store.load('https://relay.example.test', identity.deviceId)).toEqual(initial)
       expect((await api.authenticate(identity)).refreshToken).toBe('recovered-refresh-value')
       const bodies = fetchMock.mock.calls.map(call => JSON.parse(call[1].body as string))
       expect(bodies.every(body => body.refreshToken === initial.refreshToken)).toBe(true)
@@ -781,9 +611,9 @@ it('does not treat a 503 authorization-shaped envelope as permanent authorizatio
   directories.push(directory)
   const identity = hostIdentity()
   const store = new ServerCredentialStore(directory)
-  await store.save({ serverUrl: 'https://dsh.r2049.cn', deviceId: identity.deviceId,
+  await store.save({ serverUrl: 'https://relay.example.test', deviceId: identity.deviceId,
     authorizationMethod: 'account', ...tokens({ accessTokenExpiresAt: Date.now() - 1 }) })
-  const api = new HostServerApi('https://dsh.r2049.cn', store,
+  const api = new HostServerApi('https://relay.example.test', store,
     vi.fn(async () => errorJson('AUTH_INVALID', 'server internal failure', 503)) as unknown as typeof fetch)
   await expect(api.authenticate(identity)).rejects.toMatchObject({
     code: 'CONNECTION_FAILED', retryable: true, status: 503, phase: 'credential_refresh', reason: 'http_error',
@@ -795,14 +625,14 @@ it('uses newly saved credentials after a delayed refresh rejection without retry
   directories.push(directory)
   const identity = hostIdentity()
   const store = new ServerCredentialStore(directory)
-  const initial = await store.save({ serverUrl: 'https://dsh.r2049.cn', deviceId: identity.deviceId,
+  const initial = await store.save({ serverUrl: 'https://relay.example.test', deviceId: identity.deviceId,
     authorizationMethod: 'account', ...tokens({ accessTokenExpiresAt: Date.now() - 1 }) })
   const newer = { ...initial, ...tokens({ accessToken: 'newer-access-token-value', refreshToken: 'newer-refresh-token-value' }) }
   const fetchMock = vi.fn(async () => {
     await store.save(newer)
     return errorJson('AUTH_INVALID', 'obsolete refresh token', 401)
   })
-  const api = new HostServerApi('https://dsh.r2049.cn', store, fetchMock as unknown as typeof fetch)
+  const api = new HostServerApi('https://relay.example.test', store, fetchMock as unknown as typeof fetch)
   expect((await api.authenticate(identity)).refreshToken).toBe(newer.refreshToken)
   expect(fetchMock).toHaveBeenCalledTimes(1)
 })
@@ -825,17 +655,17 @@ it('retries unstructured authorization responses but preserves explicit protocol
     directories.push(directory)
     const identity = hostIdentity()
     const store = new ServerCredentialStore(directory)
-    const initial = await store.save({ serverUrl: 'https://dsh.r2049.cn', deviceId: identity.deviceId,
+    const initial = await store.save({ serverUrl: 'https://relay.example.test', deviceId: identity.deviceId,
       authorizationMethod: 'account', ...tokens({ accessTokenExpiresAt: Date.now() - 1 }) })
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(row.body, { status: row.status }))
       .mockResolvedValueOnce(json(tokens({ refreshToken: 'recovered-refresh-value' })))
-    const api = new HostServerApi('https://dsh.r2049.cn', store, fetchMock)
+    const api = new HostServerApi('https://relay.example.test', store, fetchMock)
     await expect(api.authenticate(identity)).rejects.toMatchObject({
       code: row.terminal ?? (row.limited ? 'RATE_LIMITED' : 'CONNECTION_FAILED'), retryable: row.terminal === undefined,
       status: row.status, phase: 'credential_refresh', reason: row.reason ?? 'http_error',
     })
-    expect(await store.load('https://dsh.r2049.cn', identity.deviceId)).toEqual(initial)
+    expect(await store.load('https://relay.example.test', identity.deviceId)).toEqual(initial)
     if (row.terminal === undefined) {
       expect((await api.authenticate(identity)).refreshToken).toBe('recovered-refresh-value')
       expect(fetchMock).toHaveBeenCalledTimes(2)

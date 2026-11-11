@@ -407,48 +407,7 @@ describe('ClientModeRuntime Host account control', () => {
     )
   })
 
-  it('forwards opaque QR provider IDs and rejects malformed control input', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'dsh-client-qr-provider-'))
-    directories.push(directory)
-    const startOAuthQrLogin = vi.fn(async (provider: string) => ({
-      qrId: `${provider}-qr-session-1234567890`,
-      scanUrl: `https://dsh.r2049.cn/api/v1/auth/q/${provider}-qr-session-1234567890`,
-      expiresIn: 600,
-    }))
-    const runtime = new ClientModeRuntime(
-      config(),
-      new IdentityStore({ directory }),
-      { bindIdentity: vi.fn(), startOAuthQrLogin } as unknown as ClientServerApi,
-      gateway(),
-      logger(),
-    )
-    await runtime.start()
-    const signal = new AbortController().signal
 
-    await expect(runtime.handleControl(
-      'client.account.qr.start',
-      { provider: 'github' },
-      signal,
-    )).resolves.toMatchObject({ ok: true, value: { expiresIn: 600 } })
-    expect(startOAuthQrLogin).toHaveBeenCalledWith('github')
-
-    await expect(runtime.handleControl(
-      'client.account.qr.start',
-      { provider: 'future-provider' },
-      signal,
-    )).resolves.toMatchObject({ ok: true })
-    expect(startOAuthQrLogin).toHaveBeenCalledWith('future-provider')
-    await expect(runtime.handleControl(
-      'client.account.qr.start',
-      { provider: { id: 'github' } },
-      signal,
-    )).resolves.toMatchObject({
-      ok: false,
-      error: { code: 'internal', details: { remoteCode: 'INVALID_MESSAGE' } },
-    })
-    expect(startOAuthQrLogin).toHaveBeenCalledTimes(2)
-    await runtime.close()
-  })
 
   it('keeps the selected remote Workspace until the browser opens it', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'dsh-client-workspace-selection-'))
@@ -1322,7 +1281,7 @@ describe('ClientModeRuntime Host account control', () => {
         bindIdentity: vi.fn(),
         hasStoredAuthorization: vi.fn(async () => true),
         authenticate,
-        pollOAuthQrLogin: vi.fn(async () => ({ status: 'complete' })),
+        authorizeWithAccount: vi.fn(async () => ({ account: 'owner@example.com' })),
       } as unknown as ClientServerApi,
       gateway(),
       logger(),
@@ -1331,7 +1290,7 @@ describe('ClientModeRuntime Host account control', () => {
     await runtime.start()
     expect(host.authorizeHostAsOwned).not.toHaveBeenCalled()
 
-    await runtime.pollClientOAuthQrLogin('qr-session-identifier-0001')
+    await runtime.authorizeClientWithAccount('owner@example.com', 'correct horse battery staple')
 
     expect(authenticate).toHaveBeenCalledOnce()
     expect(host.authorizeHostAsOwned).toHaveBeenCalledWith('fresh-access-token', 'owner@example.com')
@@ -1364,7 +1323,7 @@ describe('ClientModeRuntime Host account control', () => {
         bindIdentity: vi.fn(),
         hasStoredAuthorization: vi.fn(async () => true),
         authenticate,
-        pollOAuthQrLogin: vi.fn(async () => ({ status: 'complete' })),
+        authorizeWithAccount: vi.fn(async () => ({ account: 'owner@example.com' })),
       } as unknown as ClientServerApi,
       gateway(),
       logger(),
@@ -1372,7 +1331,7 @@ describe('ClientModeRuntime Host account control', () => {
     )
     await runtime.start()
 
-    await runtime.pollClientOAuthQrLogin('qr-session-identifier-0002')
+    await runtime.authorizeClientWithAccount('owner@example.com', 'correct horse battery staple')
 
     expect(authenticate).not.toHaveBeenCalled()
     expect(host.authorizeHostAsOwned).not.toHaveBeenCalled()
@@ -1510,7 +1469,7 @@ describe('ClientModeRuntime Host account control', () => {
     const replacement = generateKeyPair(new Uint8Array(32).fill(22))
     let identityKey = first.publicKey
     const server = {
-      baseUrl: 'https://dsh.r2049.cn',
+      baseUrl: 'https://relay.example.test',
       bindIdentity: vi.fn(),
       devicePages: async function* () { yield [{
         deviceId: 'host-device-1',
@@ -1579,7 +1538,7 @@ function config(): ResolvedConfig {
     loopback: { ports: [] },
     enabled: true,
     role: 'both',
-    serverUrl: 'https://dsh.r2049.cn',
+    serverUrl: 'https://relay.example.test',
     deviceName: 'Local Harness',
     forceRelay: false,
     rotatePinnedPeerKey: false,

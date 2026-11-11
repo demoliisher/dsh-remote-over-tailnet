@@ -217,7 +217,7 @@ export function resolveConfig(input: ConfigInput = {}, env: NodeJS.ProcessEnv = 
     ?? false
   const codexBackend = parsed.acp?.backends?.find(item => item.id === 'codex')
   const codexEnabled = codexBackend?.enabled ?? parsed.codex?.enabled ?? true
-  const acpEnabled = parsed.acp?.enabled ?? true
+  const acpEnabled = parsed.acp?.enabled ?? false
   const reconnect = typeof parsed.reconnect === 'object' ? parsed.reconnect : {}
   const configuredServerUrl = parsed.serverUrl ?? env.DSH_REMOTE_SERVER
   const serverUrl = configuredServerUrl === undefined ? undefined : normalizeServerUrl(configuredServerUrl)

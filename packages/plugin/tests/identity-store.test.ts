@@ -304,7 +304,7 @@ describe('IdentityStore', () => {
       if (scenario === 'legacy-client-only') {
         const home = await temporaryDirectory()
         const legacyRoot = join(home, 'remote')
-        const serverUrl = 'https://dsh.r2049.cn'
+        const serverUrl = 'https://relay.example.test'
         const legacyClientDir = serverStorageDirectory(legacyRoot, serverUrl, 'client')
         await mkdir(legacyClientDir, { recursive: true })
         await writeFile(join(legacyClientDir, 'device.json'), JSON.stringify({
@@ -326,7 +326,7 @@ describe('IdentityStore', () => {
       if (scenario === 'legacy-upgrade') {
         const home = await temporaryDirectory()
         const legacyRoot = join(home, 'remote')
-        const serverUrl = 'https://dsh.r2049.cn'
+        const serverUrl = 'https://relay.example.test'
         const legacyHostDir = serverStorageDirectory(legacyRoot, serverUrl, 'host')
         const legacyClientDir = serverStorageDirectory(legacyRoot, serverUrl, 'client')
         const hostIdentity = await new IdentityStore({ directory: legacyHostDir, role: 'host' }).loadOrCreate('Host')
@@ -397,7 +397,7 @@ describe('IdentityStore', () => {
       await writeFile(join(directory, 'device.key'), `${second.privateKey}\n`, { mode: 0o600 })
       if (scenario === 'credentials') {
         await new ServerCredentialStore(directory).save({
-          serverUrl: 'https://dsh.r2049.cn',
+          serverUrl: 'https://relay.example.test',
           deviceId: first.deviceId,
           authorizationMethod: 'owned_device',
           accessToken: 'token-access-12345',

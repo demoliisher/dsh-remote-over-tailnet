@@ -161,7 +161,7 @@ describe('HostServerConnection', () => {
       close: vi.fn(async () => undefined),
     } as unknown as ConnectionController
     const api = {
-      baseUrl: 'https://dsh.r2049.cn',
+      baseUrl: 'https://relay.example.test',
       authenticate: vi.fn(async () => ({ accessToken: 'access-token-value' })),
       refreshCredentials: vi.fn(),
       deviceFor: vi.fn(async () => ({
@@ -348,7 +348,7 @@ describe('HostServerConnection', () => {
       close: vi.fn(async () => undefined),
     } as unknown as ConnectionController
     const api = {
-      baseUrl: 'https://dsh.r2049.cn',
+      baseUrl: 'https://relay.example.test',
       authenticate: vi.fn(async () => ({ accessToken: 'access-token-value' })),
       deviceFor: vi.fn(async () => ({
         deviceId: peer.deviceId,
@@ -447,7 +447,7 @@ describe('HostServerConnection', () => {
   it('stops reconnecting until account authorization is supplied', async () => {
     const keys = generateKeyPair(new Uint8Array(32).fill(13))
     const api = {
-      baseUrl: 'https://dsh.r2049.cn',
+      baseUrl: 'https://relay.example.test',
       authenticate: vi.fn(async () => {
         throw new ServerApiError('ACCOUNT_AUTH_REQUIRED', 'account login required', false, 401)
       }),
@@ -475,7 +475,7 @@ describe('HostServerConnection', () => {
     let socketIndex = 0
     const createWebSocket = vi.fn(() => sockets[socketIndex++]!)
     const api = {
-      baseUrl: 'https://dsh.r2049.cn',
+      baseUrl: 'https://relay.example.test',
       authenticate: vi.fn(async () => ({ accessToken: 'access-token-value' })),
     } as unknown as HostServerApi
     const server = new HostServerConnection(
@@ -530,7 +530,7 @@ describe('HostServerConnection', () => {
             const keys = generateKeyPair(new Uint8Array(32).fill(24))
             const sockets: FakeWebSocket[] = []
             const api = {
-              baseUrl: 'https://dsh.r2049.cn',
+              baseUrl: 'https://relay.example.test',
               authenticate: vi.fn(async () => ({
                 accessToken: sockets.length === 0 ? 'old-access-value' : 'new-access-value',
               })),
@@ -655,7 +655,7 @@ describe('HostServerConnection', () => {
                 accessToken = 'new-access-value'
               })
             const api = {
-              baseUrl: 'https://dsh.r2049.cn',
+              baseUrl: 'https://relay.example.test',
               authenticate: vi.fn(async () => ({ accessToken })),
               refreshCredentials,
             } as unknown as HostServerApi
@@ -722,7 +722,7 @@ describe('HostServerConnection', () => {
     let channel: AuthenticatedPeerChannel | undefined
     const server = new HostServerConnection(
       config(), { schemaVersion: 1, deviceId: 'host-1', name: 'Host', fingerprint: 'HOST', ...hostKeys },
-      {} as IdentityStore, { baseUrl: 'https://dsh.r2049.cn' } as HostServerApi,
+      {} as IdentityStore, { baseUrl: 'https://relay.example.test' } as HostServerApi,
       { accept: vi.fn(async (value: AuthenticatedPeerChannel) => { channel = value }), close: vi.fn(async () => undefined) } as unknown as ConnectionController,
       logger(), () => socket,
     )
@@ -766,7 +766,7 @@ describe('HostServerConnection', () => {
       config(),
       { schemaVersion: 1, deviceId: 'host-rtc', name: 'Host', fingerprint: 'HOST', ...keys },
       { trustedPeer: vi.fn() } as unknown as IdentityStore,
-      { baseUrl: 'https://dsh.r2049.cn' } as HostServerApi,
+      { baseUrl: 'https://relay.example.test' } as HostServerApi,
       { closeConnection } as unknown as ConnectionController,
       logger(),
       () => new FakeWebSocket(),
@@ -793,7 +793,7 @@ describe('HostServerConnection', () => {
       config(),
       { schemaVersion: 1, deviceId: 'host-rtc', name: 'Host', fingerprint: 'HOST', ...generateKeyPair() },
       { trustedPeer: vi.fn() } as unknown as IdentityStore,
-      { baseUrl: 'https://dsh.r2049.cn', authenticate: vi.fn(async () => ({ accessToken: 'access-token' })) } as unknown as HostServerApi,
+      { baseUrl: 'https://relay.example.test', authenticate: vi.fn(async () => ({ accessToken: 'access-token' })) } as unknown as HostServerApi,
       connections,
       logger(),
       () => socket,
@@ -828,7 +828,7 @@ describe('HostServerConnection', () => {
       { ...cfg, forceRelay: false },
       { schemaVersion: 1, deviceId: 'host-rtc', name: 'Host', fingerprint: 'HOST', ...generateKeyPair() },
       { trustedPeer: vi.fn() } as unknown as IdentityStore,
-      { baseUrl: 'https://dsh.r2049.cn', authenticate: vi.fn(async () => ({ accessToken: 'access-token' })) } as unknown as HostServerApi,
+      { baseUrl: 'https://relay.example.test', authenticate: vi.fn(async () => ({ accessToken: 'access-token' })) } as unknown as HostServerApi,
       connections, logger(), () => socket, async () => undefined,
     )
     const requests: Array<{ connectionId: string; requestId: string; ticket: string }> = []
@@ -869,7 +869,7 @@ describe('HostServerConnection', () => {
       { ...cfg, forceRelay: false, reconnect: { ...cfg.reconnect, enabled: true, initialDelayMs: 20, maxDelayMs: 120 } },
       { schemaVersion: 1, deviceId: 'host-rtc', name: 'Host', fingerprint: 'HOST', ...generateKeyPair() },
       { trustedPeer: vi.fn() } as unknown as IdentityStore,
-      { baseUrl: 'https://dsh.r2049.cn', authenticate: vi.fn(async () => ({ accessToken: 'access-token' })), refreshCredentials: vi.fn(async () => undefined) } as unknown as HostServerApi,
+      { baseUrl: 'https://relay.example.test', authenticate: vi.fn(async () => ({ accessToken: 'access-token' })), refreshCredentials: vi.fn(async () => undefined) } as unknown as HostServerApi,
       { close: vi.fn(async () => undefined) } as unknown as ConnectionController,
       logger(),
       () => { const socket = new FakeWebSocket(); sockets.push(socket); return socket },
@@ -951,7 +951,7 @@ describe('HostServerConnection', () => {
           { ...cfg, forceRelay: false, reconnect: { ...cfg.reconnect, enabled: true, initialDelayMs: 100, maxDelayMs: 400, jitter: 0 } },
           { schemaVersion: 1, deviceId: 'host-shutdown', name: 'Host', fingerprint: 'HOST', ...generateKeyPair() },
           { trustedPeer: vi.fn() } as unknown as IdentityStore,
-          { baseUrl: 'https://dsh.r2049.cn', authenticate: vi.fn(async () => ({ accessToken: 'access-token' })) } as unknown as HostServerApi,
+          { baseUrl: 'https://relay.example.test', authenticate: vi.fn(async () => ({ accessToken: 'access-token' })) } as unknown as HostServerApi,
           { close: vi.fn(async () => undefined) } as unknown as ConnectionController,
           logger(), () => { const socket = new FakeWebSocket(); sockets.push(socket); return socket }, async () => undefined,
         )
@@ -991,7 +991,7 @@ describe('HostServerConnection', () => {
       { ...cfg, forceRelay: false, reconnect: { ...cfg.reconnect, enabled: true } },
       { schemaVersion: 1, deviceId: 'host-rtc', name: 'Host', fingerprint: 'HOST', ...generateKeyPair() },
       { trustedPeer: vi.fn() } as unknown as IdentityStore,
-      { baseUrl: 'https://dsh.r2049.cn', authenticate: vi.fn(async () => ({ accessToken: 'access-token' })) } as unknown as HostServerApi,
+      { baseUrl: 'https://relay.example.test', authenticate: vi.fn(async () => ({ accessToken: 'access-token' })) } as unknown as HostServerApi,
       { close: vi.fn(async () => undefined) } as unknown as ConnectionController,
       logger(), () => { const socket = new FakeWebSocket(); sockets.push(socket); return socket }, async () => undefined,
     )
@@ -1037,7 +1037,7 @@ describe('HostServerConnection', () => {
       config(),
       { schemaVersion: 1, deviceId: 'host-negotiating', name: 'Host', fingerprint: 'HOST', ...keys },
       { trustedPeer: vi.fn() } as unknown as IdentityStore,
-      { baseUrl: 'https://dsh.r2049.cn' } as HostServerApi,
+      { baseUrl: 'https://relay.example.test' } as HostServerApi,
       { closeConnection } as unknown as ConnectionController,
       logger(),
       () => new FakeWebSocket(),
@@ -1265,7 +1265,7 @@ function config(): ResolvedConfig {
     loopback: { ports: [] },
     enabled: true,
     role: 'host',
-    serverUrl: 'https://dsh.r2049.cn',
+    serverUrl: 'https://relay.example.test',
     deviceName: 'Host',
     forceRelay: true,
     rotatePinnedPeerKey: false,
@@ -1303,7 +1303,7 @@ describe('pinned peer identity rotation', () => {
     const peer = { ...stalePin, publicKey: NEW_KEY }
     const socket = new FakeWebSocket()
     const api = {
-      baseUrl: 'https://dsh.r2049.cn',
+      baseUrl: 'https://relay.example.test',
       authenticate: vi.fn(async () => ({ accessToken: 'access-token-value' })),
       refreshCredentials: vi.fn(),
       deviceFor: vi.fn(async () => ({
@@ -1401,7 +1401,7 @@ it('reconnects after temporary 1013 handshakes without spending another credenti
     const sockets: FakeWebSocket[] = []
     let accessToken = 'old-access-value'
     const api = {
-      baseUrl: 'https://dsh.r2049.cn',
+      baseUrl: 'https://relay.example.test',
       authenticate: vi.fn(async () => ({ accessToken })),
       refreshCredentials: vi.fn(async () => { accessToken = 'new-access-value' }),
       clearAuthorization: vi.fn(),
@@ -1442,7 +1442,7 @@ it('keeps reconnecting through non-protocol gateway 401 responses and becomes on
     }
     const store = new ServerCredentialStore(directory)
     const initial = await store.save({
-      serverUrl: 'https://dsh.r2049.cn', deviceId: identity.deviceId, authorizationMethod: 'account',
+      serverUrl: 'https://relay.example.test', deviceId: identity.deviceId, authorizationMethod: 'account',
       accessToken: 'old-access-token-value', accessTokenExpiresAt: Date.now() - 1,
       refreshToken: 'old-refresh-token-value', refreshTokenExpiresAt: Date.now() + 86400000,
     })
@@ -1456,10 +1456,10 @@ it('keeps reconnecting through non-protocol gateway 401 responses and becomes on
       }), { status: 200 }),
     ]
     const fetcher = vi.fn(async () => {
-      expect(await store.load('https://dsh.r2049.cn', identity.deviceId)).toEqual(initial)
+      expect(await store.load('https://relay.example.test', identity.deviceId)).toEqual(initial)
       return responses.shift()!
     })
-    const api = new HostServerApi('https://dsh.r2049.cn', store, fetcher)
+    const api = new HostServerApi('https://relay.example.test', store, fetcher)
     const sockets: FakeWebSocket[] = []
     const logs = logger()
     server = new HostServerConnection(
@@ -1477,7 +1477,7 @@ it('keeps reconnecting through non-protocol gateway 401 responses and becomes on
     expect(fetcher).toHaveBeenCalledTimes(4)
     expect(responses).toHaveLength(0)
     expect(logs.warn).not.toHaveBeenCalledWith('server control connection failed', expect.objectContaining({ code: 'AUTH_INVALID' }))
-    expect((await store.load('https://dsh.r2049.cn', identity.deviceId))?.refreshToken).toBe('recovered-refresh-token')
+    expect((await store.load('https://relay.example.test', identity.deviceId))?.refreshToken).toBe('recovered-refresh-token')
   } finally {
     await server?.stop()
     await rm(directory, { recursive: true, force: true })
@@ -1489,7 +1489,7 @@ it('reconnects when the control WebSocket goes silent beyond 3x heartbeatInterva
   const sockets: FakeWebSocket[] = []
   const logs = logger()
   const api = {
-    baseUrl: 'https://dsh.r2049.cn',
+    baseUrl: 'https://relay.example.test',
     authenticate: vi.fn(async () => ({ accessToken: 'access-token' })),
   } as unknown as HostServerApi
   const server = new HostServerConnection(
@@ -1551,7 +1551,7 @@ it('completes watchdog reconnect and stop even when an async control frame handl
   const sockets: FakeWebSocket[] = []
   let resolveDeviceLookup: ((value: unknown) => void) | undefined
   const api = {
-    baseUrl: 'https://dsh.r2049.cn',
+    baseUrl: 'https://relay.example.test',
     authenticate: vi.fn(async () => ({ accessToken: 'access-token' })),
     deviceFor: vi.fn(() => new Promise(resolve => { resolveDeviceLookup = resolve })),
   } as unknown as HostServerApi
@@ -1700,7 +1700,7 @@ it('automatically recovers from a stalled CONNECTING upgrade or stalled 4002 cre
   let resolveRefresh: (() => void) | undefined
   let resolveSlowLookup: ((value: unknown) => void) | undefined
   const api = {
-    baseUrl: 'https://dsh.r2049.cn',
+    baseUrl: 'https://relay.example.test',
     authenticate: vi.fn(async () => ({ accessToken: 'access-token' })),
     refreshCredentials: vi.fn(() => new Promise<void>(resolve => { resolveRefresh = resolve })),
     deviceFor: vi.fn(() => new Promise(resolve => { resolveSlowLookup = resolve })),
@@ -1822,7 +1822,7 @@ it('stops sending remaining fragments when a relay tunnel is dropped mid-send', 
     config(),
     { schemaVersion: 1, deviceId: 'host-frag', name: 'Host', fingerprint: 'HOST', ...hostKeys },
     { trustedPeer: () => undefined } as unknown as IdentityStore,
-    { baseUrl: 'https://dsh.r2049.cn' } as HostServerApi,
+    { baseUrl: 'https://relay.example.test' } as HostServerApi,
     {
       accept: vi.fn(async (ch: AuthenticatedPeerChannel) => { accepted = ch }),
       closeConnection: vi.fn(async () => false),

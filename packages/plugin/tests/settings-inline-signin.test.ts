@@ -75,17 +75,6 @@ const findElement = (node: any, predicate: (n: any) => boolean): any => {
   return null
 }
 
-const waitForElement = async (renderFn: () => any, predicate: (n: any) => boolean, timeoutMs = 4000): Promise<{ tree: any; el: any }> => {
-  const start = Date.now()
-  while (Date.now() - start < timeoutMs) {
-    const tree = renderFn()
-    const el = findElement(tree, predicate)
-    if (el) return { tree, el }
-    await new Promise(r => setTimeout(r, 25))
-  }
-  const tree = renderFn()
-  return { tree, el: findElement(tree, predicate) }
-}
 
 describe('RemotePluginOptions inline sign-in suite', () => {
   it('toggles inline sign-in with accessible attributes without invoking props.onSignIn', async () => {
@@ -94,7 +83,7 @@ describe('RemotePluginOptions inline sign-in suite', () => {
     const controlSpy = vi.fn(async (endpoint: string) => {
       if (endpoint === 'settings.get') {
         return {
-          config: { serverUrl: 'https://dsh.r2049.cn' },
+          config: { serverUrl: 'https://relay.example.test' },
           deviceName: 'test-device',
           writable: true,
           applies: 'restart',
@@ -104,7 +93,6 @@ describe('RemotePluginOptions inline sign-in suite', () => {
       if (endpoint === 'status') {
         return { mode: 'local', available: false, hostAuthorizationAvailable: true }
       }
-      if (endpoint === 'client.account.providers') return []
       return {}
     })
 
@@ -157,7 +145,7 @@ describe('RemotePluginOptions inline sign-in suite', () => {
     const controlSpy = vi.fn(async (endpoint: string, payload?: any) => {
       if (endpoint === 'settings.get') {
         return {
-          config: { serverUrl: 'https://dsh.r2049.cn' },
+          config: { serverUrl: 'https://relay.example.test' },
           deviceName: 'test-device',
           writable: true,
           applies: 'restart',
@@ -167,13 +155,12 @@ describe('RemotePluginOptions inline sign-in suite', () => {
       if (endpoint === 'status') {
         return { mode: 'local', available: false, hostAuthorizationAvailable: true }
       }
-      if (endpoint === 'client.account.providers') return []
       if (endpoint === 'settings.configure') {
         return {
           status: 'authorized',
           role: 'client',
           settings: {
-            config: { serverUrl: 'https://dsh.r2049.cn' },
+            config: { serverUrl: 'https://relay.example.test' },
             deviceName: 'test-device',
             writable: true,
             applies: 'restart',
@@ -218,7 +205,7 @@ describe('RemotePluginOptions inline sign-in suite', () => {
 
     expect(controlSpy).toHaveBeenCalledWith('settings.configure', {
       role: 'client',
-      serverUrl: 'https://dsh.r2049.cn',
+      serverUrl: 'https://relay.example.test',
       email: 'tester@example.com',
       password: 'mypassword',
     })
@@ -230,470 +217,4 @@ describe('RemotePluginOptions inline sign-in suite', () => {
     unmount()
   })
 
-  it('completes OAuth QR login and handles polling completion', async () => {
-    const { React, resetRender, unmount } = createTestHarness()
-    let pollCount = 0
-
-    const controlSpy = vi.fn(async (endpoint: string, payload?: any) => {
-      if (endpoint === 'settings.get') {
-        return {
-          config: { serverUrl: 'https://dsh.r2049.cn' },
-          deviceName: 'test-device',
-          writable: true,
-          applies: 'restart',
-          associations: pollCount >= 2 ? { client: { method: 'account', account: 'qr-user@example.com' } } : {},
-        } as PluginSettingsView
-      }
-      if (endpoint === 'status') {
-        return { mode: 'local', available: false, hostAuthorizationAvailable: true }
-      }
-      if (endpoint === 'client.account.providers') {
-        return [{ id: 'zhihu', displayName: 'Zhihu', qrStartUrl: 'https://example.com/qr' }]
-      }
-      if (endpoint === 'client.account.qr.start') {
-        return { qrId: 'qr-session-test-id-1234567890', scanUrl: 'https://example.com/scan', expiresIn: 120 }
-      }
-      if (endpoint === 'client.account.qr.poll') {
-        pollCount++
-        if (pollCount === 1) return { status: 'pending' }
-        return { status: 'complete' }
-      }
-      return {}
-    })
-
-    const statusFeed = { subscribe: vi.fn(() => () => {}), close: vi.fn(), getSnapshot: () => undefined } as any
-    const Component = createRemotePluginOptions(React) as any
-    const render = () => {
-      resetRender()
-      return Component({
-        control: controlSpy,
-        statusFeed,
-        preferredQrProvider: 'zhihu',
-        t: (k: string) => k,
-        view: 'page',
-      })
-    }
-
-    render()
-    await new Promise(r => setTimeout(r, 10))
-    let tree = render()
-
-    const toggleBtn = findElement(tree, (n: any) => n.props?.['aria-controls'] === 'dsh-remote-inline-signin')
-    toggleBtn.props.onClick()
-
-    const { tree: qrTree, el: qrImg } = await waitForElement(render, (n: any) => n.type === 'img')
-    tree = qrTree
-    expect(controlSpy).toHaveBeenCalledWith('client.account.qr.start', { provider: 'zhihu' })
-    expect(qrImg).not.toBeNull()
-
-    // Wait for polling to hit complete
-    await new Promise(r => setTimeout(r, 1550))
-    // Render triggers the completion effect which fetches settings.get
-    tree = render()
-    await new Promise(r => setTimeout(r, 20))
-    tree = render()
-
-    expect(controlSpy).toHaveBeenCalledWith('client.account.qr.poll', { qrId: 'qr-session-test-id-1234567890' })
-    expect(findElement(tree, (n: any) => n.props?.className?.includes('dshRemoteAssociation'))).not.toBeNull()
-
-    unmount()
-  })
-
-  it('handles QR startup failure without extra provider discovery and recovers on retry', async () => {
-    const { React, resetRender, unmount } = createTestHarness()
-    let startCalls = 0
-    let providerCalls = 0
-
-    const controlSpy = vi.fn(async (endpoint: string, payload?: any) => {
-      if (endpoint === 'settings.get') {
-        return {
-          config: { serverUrl: 'https://dsh.r2049.cn' },
-          deviceName: 'test-device',
-          writable: true,
-          applies: 'restart',
-          associations: {},
-        } as PluginSettingsView
-      }
-      if (endpoint === 'status') {
-        return { mode: 'local', available: false, hostAuthorizationAvailable: true }
-      }
-      if (endpoint === 'client.account.providers') {
-        providerCalls++
-        return [{ id: 'github', displayName: 'GitHub', qrStartUrl: 'https://github.com/login' }]
-      }
-      if (endpoint === 'client.account.qr.start') {
-        startCalls++
-        if (startCalls === 1) throw new Error('network down')
-        return { qrId: 'qr-session-recovered-1234567890', scanUrl: 'https://github.com/scan', expiresIn: 120 }
-      }
-      if (endpoint === 'client.account.qr.poll') {
-        return { status: 'pending' }
-      }
-      return {}
-    })
-
-    const statusFeed = { subscribe: vi.fn(() => () => {}), close: vi.fn(), getSnapshot: () => undefined } as any
-    const Component = createRemotePluginOptions(React) as any
-    const render = () => {
-      resetRender()
-      return Component({
-        control: controlSpy,
-        statusFeed,
-        preferredQrProvider: 'github',
-        t: (k: string) => k,
-        view: 'page',
-      })
-    }
-
-    render()
-    await new Promise(r => setTimeout(r, 10))
-    let tree = render()
-
-    const toggleBtn = findElement(tree, (n: any) => n.props?.['aria-controls'] === 'dsh-remote-inline-signin')
-    toggleBtn.props.onClick()
-
-    const { el: retryBtn } = await waitForElement(
-      render,
-      (n: any) => n.props?.className?.includes('dshRemoteReconnect') && n.children?.[0] === 'retryLoginProviders'
-    )
-    expect(startCalls).toBe(1)
-    expect(providerCalls).toBe(1)
-    expect(retryBtn).not.toBeNull()
-
-    // Clicking retry button attempts QR start again WITHOUT re-fetching providers!
-    retryBtn.props.onClick()
-
-    const { el: qrImg } = await waitForElement(render, (n: any) => n.type === 'img')
-    expect(qrImg).not.toBeNull()
-
-    expect(providerCalls).toBe(1) // Providers was NOT re-fetched
-    expect(startCalls).toBe(2)    // Exactly 1 new start attempt
-
-    unmount()
-  })
-
-  it('handles QR expiration and refresh', async () => {
-    const { React, resetRender, unmount } = createTestHarness()
-    let startCount = 0
-
-    const controlSpy = vi.fn(async (endpoint: string, payload?: any) => {
-      if (endpoint === 'settings.get') {
-        return {
-          config: { serverUrl: 'https://dsh.r2049.cn' },
-          deviceName: 'test-device',
-          writable: true,
-          applies: 'restart',
-          associations: {},
-        } as PluginSettingsView
-      }
-      if (endpoint === 'status') {
-        return { mode: 'local', available: false, hostAuthorizationAvailable: true }
-      }
-      if (endpoint === 'client.account.providers') {
-        return [{ id: 'zhihu', displayName: 'Zhihu', qrStartUrl: 'https://example.com/qr' }]
-      }
-      if (endpoint === 'client.account.qr.start') {
-        startCount++
-        return { qrId: `qr-session-${startCount}`, scanUrl: `https://example.com/scan/${startCount}`, expiresIn: 30 }
-      }
-      if (endpoint === 'client.account.qr.poll') {
-        if (startCount === 1) return { status: 'expired' }
-        return { status: 'pending' }
-      }
-      return {}
-    })
-
-    const statusFeed = { subscribe: vi.fn(() => () => {}), close: vi.fn(), getSnapshot: () => undefined } as any
-    const Component = createRemotePluginOptions(React) as any
-    const render = () => {
-      resetRender()
-      return Component({
-        control: controlSpy,
-        statusFeed,
-        preferredQrProvider: 'zhihu',
-        t: (k: string) => k,
-        view: 'page',
-      })
-    }
-
-    render()
-    await new Promise(r => setTimeout(r, 10))
-    let tree = render()
-
-    const toggleBtn = findElement(tree, (n: any) => n.props?.['aria-controls'] === 'dsh-remote-inline-signin')
-    toggleBtn.props.onClick()
-
-    const { el: qrImg1 } = await waitForElement(render, (n: any) => n.type === 'img')
-    expect(qrImg1).not.toBeNull()
-    expect(startCount).toBe(1)
-
-    // Wait for poll to return expired and refresh button to appear
-    const { el: refreshBtn } = await waitForElement(
-      render,
-      (n: any) => n.props?.className?.includes('dshRemoteReconnect') && n.children?.[0] === 'refreshQrCode',
-      4000
-    )
-    expect(refreshBtn).not.toBeNull()
-
-    // Click refresh QR code
-    refreshBtn.props.onClick()
-
-    const { el: qrImg2 } = await waitForElement(render, (n: any) => n.type === 'img')
-    expect(qrImg2).not.toBeNull()
-    expect(startCount).toBe(2)
-
-    unmount()
-  })
-
-  it('cancels polling and rejects late state updates when closing inline sign-in', async () => {
-    const { React, resetRender, unmount } = createTestHarness()
-    let lateResolve: ((value: any) => void) | undefined
-
-    const controlSpy = vi.fn(async (endpoint: string, payload?: any) => {
-      if (endpoint === 'settings.get') {
-        return {
-          config: { serverUrl: 'https://dsh.r2049.cn' },
-          deviceName: 'test-device',
-          writable: true,
-          applies: 'restart',
-          associations: {},
-        } as PluginSettingsView
-      }
-      if (endpoint === 'status') {
-        return { mode: 'local', available: false, hostAuthorizationAvailable: true }
-      }
-      if (endpoint === 'client.account.providers') {
-        return [{ id: 'zhihu', displayName: 'Zhihu', qrStartUrl: 'https://example.com/qr' }]
-      }
-      if (endpoint === 'client.account.qr.start') {
-        return { qrId: 'qr-session-closing-test', scanUrl: 'https://example.com/scan', expiresIn: 120 }
-      }
-      if (endpoint === 'client.account.qr.poll') {
-        return new Promise(resolve => { lateResolve = resolve })
-      }
-      return {}
-    })
-
-    const statusFeed = { subscribe: vi.fn(() => () => {}), close: vi.fn(), getSnapshot: () => undefined } as any
-    const Component = createRemotePluginOptions(React) as any
-    const render = () => {
-      resetRender()
-      return Component({
-        control: controlSpy,
-        statusFeed,
-        preferredQrProvider: 'zhihu',
-        t: (k: string) => k,
-        view: 'page',
-      })
-    }
-
-    render()
-    await new Promise(r => setTimeout(r, 10))
-    let tree = render()
-
-    const toggleBtn = findElement(tree, (n: any) => n.props?.['aria-controls'] === 'dsh-remote-inline-signin')
-    toggleBtn.props.onClick()
-
-    tree = render()
-    await new Promise(r => setTimeout(r, 20))
-    tree = render()
-    await new Promise(r => setTimeout(r, 30))
-    tree = render()
-
-    // Close the section while polling is outstanding
-    const openBtn = findElement(tree, (n: any) => n.props?.['aria-controls'] === 'dsh-remote-inline-signin')
-    openBtn.props.onClick()
-
-    tree = render()
-    expect(findElement(tree, (n: any) => n.props?.id === 'dsh-remote-inline-signin')).toBeNull()
-
-    // Late poll resolution must not throw or resurrect association
-    if (lateResolve) lateResolve({ status: 'complete' })
-    await new Promise(r => setTimeout(r, 20))
-
-    tree = render()
-    expect(findElement(tree, (n: any) => n.props?.className?.includes('dshRemoteAssociation'))).toBeNull()
-
-    unmount()
-  })
-
-  it('preserves completed QR authorization when settings.get transiently fails and retries without new QR session', async () => {
-    const { React, resetRender, unmount } = createTestHarness()
-    let startCalls = 0
-    let providerCalls = 0
-    let settingsGetCalls = 0
-    let settingsGetShouldFail = true
-
-    const controlSpy = vi.fn(async (endpoint: string, payload?: any) => {
-      if (endpoint === 'client.account.providers') {
-        providerCalls++
-        return [{ id: 'zhihu', displayName: 'Zhihu', qrStartUrl: 'https://example.com/qr' }]
-      }
-      if (endpoint === 'settings.get') {
-        settingsGetCalls++
-        if (settingsGetCalls === 1) {
-          // initial load
-          return {
-            config: { serverUrl: 'https://dsh.r2049.cn' },
-            deviceName: 'test-device',
-            writable: true,
-            applies: 'restart',
-            associations: {},
-          } as PluginSettingsView
-        }
-        if (settingsGetShouldFail) {
-          throw new Error('transient settings network failure')
-        }
-        return {
-          config: { serverUrl: 'https://dsh.r2049.cn' },
-          deviceName: 'test-device',
-          writable: true,
-          applies: 'restart',
-          associations: { client: { method: 'account', account: 'authorized-qr@example.com' } },
-        } as PluginSettingsView
-      }
-      if (endpoint === 'status') {
-        return { mode: 'local', available: false, hostAuthorizationAvailable: true }
-      }
-      if (endpoint === 'client.account.providers') {
-        return [{ id: 'zhihu', displayName: 'Zhihu', qrStartUrl: 'https://example.com/qr' }]
-      }
-      if (endpoint === 'client.account.qr.start') {
-        startCalls++
-        return { qrId: 'qr-session-auth-preserved-1234567890', scanUrl: 'https://example.com/scan', expiresIn: 120 }
-      }
-      if (endpoint === 'client.account.qr.poll') {
-        return { status: 'complete' }
-      }
-      return {}
-    })
-
-    const statusFeed = { subscribe: vi.fn(() => () => {}), close: vi.fn(), getSnapshot: () => undefined } as any
-    const Component = createRemotePluginOptions(React) as any
-    const render = () => {
-      resetRender()
-      return Component({
-        control: controlSpy,
-        statusFeed,
-        preferredQrProvider: 'zhihu',
-        t: (k: string) => k,
-        view: 'page',
-      })
-    }
-
-    render()
-    await new Promise(r => setTimeout(r, 10))
-    let tree = render()
-
-    const toggleBtn = findElement(tree, (n: any) => n.props?.['aria-controls'] === 'dsh-remote-inline-signin')
-    toggleBtn.props.onClick()
-
-    const { el: qrImg } = await waitForElement(render, (n: any) => n.type === 'img')
-    expect(qrImg).not.toBeNull()
-    expect(startCalls).toBe(1)
-
-    // Wait for poll completion -> triggers settings.get which will fail -> shows retry button
-    const { el: retryBtn } = await waitForElement(
-      render,
-      (n: any) => n.props?.className?.includes('dshRemoteReconnect') && n.children?.[0] === 'retryLoginProviders',
-      4000
-    )
-    expect(startCalls).toBe(1)
-    expect(retryBtn).not.toBeNull()
-
-    // Now resolve settings.get successfully on retry
-    settingsGetShouldFail = false
-    retryBtn.props.onClick()
-
-    const { tree: assocTree, el: assoc } = await waitForElement(render, (n: any) => n.props?.className?.includes('dshRemoteAssociation'))
-    expect(assoc).not.toBeNull()
-
-    // Verified: startCalls is STILL exactly 1 and provider discovery was NOT rerun!
-    expect(startCalls).toBe(1)
-    expect(providerCalls).toBe(1)
-    expect(findElement(assocTree, (n: any) => n.props?.id === 'dsh-remote-inline-signin')).toBeNull()
-
-    unmount()
-  })
-
-  it('handles provider discovery failure and recovers when reopened', async () => {
-    const { React, resetRender, unmount } = createTestHarness()
-    let providerCalls = 0
-
-    const controlSpy = vi.fn(async (endpoint: string, payload?: any) => {
-      if (endpoint === 'settings.get') {
-        return {
-          config: { serverUrl: 'https://dsh.r2049.cn' },
-          deviceName: 'test-device',
-          writable: true,
-          applies: 'restart',
-          associations: {},
-        } as PluginSettingsView
-      }
-      if (endpoint === 'status') {
-        return { mode: 'local', available: false, hostAuthorizationAvailable: true }
-      }
-      if (endpoint === 'client.account.providers') {
-        providerCalls++
-        if (providerCalls === 1) throw new Error('failed loading providers')
-        return [{ id: 'zhihu', displayName: 'Zhihu', qrStartUrl: 'https://example.com/qr' }]
-      }
-      if (endpoint === 'client.account.qr.start') {
-        return { qrId: 'qr-session-providers-recovered', scanUrl: 'https://example.com/scan', expiresIn: 120 }
-      }
-      return {}
-    })
-
-    const statusFeed = { subscribe: vi.fn(() => () => {}), close: vi.fn(), getSnapshot: () => undefined } as any
-    const Component = createRemotePluginOptions(React) as any
-    const render = () => {
-      resetRender()
-      return Component({
-        control: controlSpy,
-        statusFeed,
-        preferredQrProvider: 'zhihu',
-        t: (k: string) => k,
-        view: 'page',
-      })
-    }
-
-    render()
-    await new Promise(r => setTimeout(r, 10))
-    let tree = render()
-
-    const toggleBtn = findElement(tree, (n: any) => n.props?.['aria-controls'] === 'dsh-remote-inline-signin')
-    toggleBtn.props.onClick()
-
-    await new Promise(r => setTimeout(r, 10))
-    const failedTree = render()
-    expect(providerCalls).toBe(1)
-    expect(findElement(failedTree, (n: any) => n.props?.type === 'password')).not.toBeNull()
-
-    // Discovery retries when the login panel is reopened; no separate retry control.
-    findElement(failedTree, (n: any) => n.props?.['aria-controls'] === 'dsh-remote-inline-signin').props.onClick()
-    tree = render()
-    findElement(tree, (n: any) => n.props?.['aria-controls'] === 'dsh-remote-inline-signin').props.onClick()
-
-    const { tree: qrTree, el: qrImg } = await waitForElement(render, (n: any) => n.type === 'img')
-    expect(qrImg).not.toBeNull()
-    expect(findElement(qrTree, (n: any) => n.props?.type === 'password')).toBeNull()
-
-    // Flat password tab switches to password form and can return to QR tab
-    const passwordTab = findElement(qrTree, (n: any) => n.props?.id === 'dsh-remote-settings-password-tab')
-    expect(passwordTab).not.toBeNull()
-    passwordTab.props.onClick()
-    tree = render()
-    expect(findElement(tree, (n: any) => n.props?.type === 'password')).not.toBeNull()
-    expect(findElement(tree, (n: any) => n.props?.className === 'dshRemotePasswordHint')?.children?.[0]).toBe('passwordHint')
-
-    const qrTab = findElement(tree, (n: any) => n.props?.id === 'dsh-remote-settings-oauth:zhihu-tab')
-    expect(qrTab).not.toBeNull()
-    qrTab.props.onClick()
-    const { el: qrImgAgain } = await waitForElement(render, (n: any) => n.type === 'img')
-    expect(qrImgAgain).not.toBeNull()
-
-    expect(providerCalls).toBe(2)
-
-    unmount()
-  })
 })
