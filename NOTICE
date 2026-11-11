@@ -1,0 +1,7 @@
+本仓库衍生自 ds-harness-remote v0.6.4
+https://github.com/liguobao/ds-harness-remote
+Copyright (c) liguobao
+Licensed under the MIT License（原文见 LICENSE）。
+
+衍生部分：dsh-remote-over-tailnet
+本项目与 Tailscale Inc.、DeepSeek 均无关联，也未获其背书。

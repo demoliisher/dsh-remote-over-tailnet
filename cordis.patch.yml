@@ -1,0 +1,15 @@
+# 本插件为 ds-harness-remote (MIT) 的衍生版本，移除了官方托管服务器依赖，
+# 改为连接本机自建中继（默认 127.0.0.1:8080），由 Tailscale 提供入网。
+- insert:
+    - id: dsh-remote-over-tailnet
+      name: dsh-remote-over-tailnet
+      inject:
+        - webServer
+      config:
+        enabled: true
+        role: host
+        serverUrl: http://127.0.0.1:8080
+        forceRelay: true
+        codex:
+          enabled: true
+          binary: codex
