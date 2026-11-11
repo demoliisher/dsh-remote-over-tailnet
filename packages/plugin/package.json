@@ -1,5 +1,5 @@
 {
-  "name": "dsh-remote-over-tailscale",
+  "name": "dsh-remote-over-tailnet",
   "version": "0.6.4",
   "description": "Tailscale-based, end-to-end encrypted remote access to DeepSeek Harness workspaces from mobile clients (fork of ds-harness-remote).",
   "keywords": [
@@ -16,7 +16,7 @@
   "type": "module",
   "main": "./dist/index.js",
   "bin": {
-    "dsh-remote-over-tailscale": "./bin/dsh-remote-over-tailscale.js"
+    "dsh-remote-over-tailnet": "./bin/dsh-remote-over-tailnet.js"
   },
   "types": "./public.d.ts",
   "exports": {

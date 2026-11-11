@@ -53,7 +53,7 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-export const name = 'dsh-remote-over-tailscale'
+export const name = 'dsh-remote-over-tailnet'
 export { Config }
 
 // The unscoped dsh-remote package belongs to another publisher. A bare name
@@ -64,7 +64,7 @@ const legacyLoaderModuleNames = new Set(['@dsh-remote/plugin'])
 const pluginSettingsNamespace = 'ds-harness-remote'
 
 /** Fallback entry id when the Loader cannot locate this plugin's entry. */
-const DEFAULT_ENTRY_ID = 'dsh-remote-over-tailscale'
+const DEFAULT_ENTRY_ID = 'dsh-remote-over-tailnet'
 /** Root include entry id prefixing every profile row's Loader path id. */
 const INCLUDE_ENTRY_PREFIX = 'include:'
 

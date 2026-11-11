@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "DSH Remote over Tailscale",
+    "title": "Remote Over Tailnet",
     "description": "Connect to this DeepSeek Harness workspace from a phone over Tailscale, with token-by-token streaming and no public gateway.",
     "detail": "locale/README.en.md"
   }

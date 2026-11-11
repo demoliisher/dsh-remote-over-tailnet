@@ -7,6 +7,11 @@ export interface Config {
   deviceName?: string
   terminal?: { enabled?: boolean }
   loopback?: { ports?: number[] }
+  tailnet?: {
+    enabled?: boolean
+    dataDirectory?: string
+    servePort?: number
+  }
   forceRelay?: boolean
   logLevel?: 'debug' | 'info' | 'warn' | 'error'
   reconnect?: boolean | {
@@ -20,7 +25,7 @@ export interface Config {
   }
 }
 
-export declare const name: 'ds-harness-remote'
+export declare const name: 'dsh-remote-over-tailnet'
 export declare const Config: unknown
 export declare function apply(ctx: Context, config?: Config | Volatile<Config>): void
 export declare function runCli(args?: readonly string[]): Promise<number>

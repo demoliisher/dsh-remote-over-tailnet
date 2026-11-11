@@ -98,7 +98,7 @@ export async function runCli(
 
 async function register(args: readonly string[], runtime: CliRuntime): Promise<number> {
   if (args.length !== 1 || args[0] === undefined || args[0].trim() === '') {
-    throw new CliUsageError('Usage: dsh-remote-over-tailscale register <server-token>')
+    throw new CliUsageError('Usage: dsh-remote-over-tailnet register <server-token>')
   }
   const context = await hostContext(runtime)
   await context.api.authorizeHostWithCode(context.identity, args[0])
@@ -107,22 +107,22 @@ async function register(args: readonly string[], runtime: CliRuntime): Promise<n
 }
 
 async function login(args: readonly string[], runtime: CliRuntime): Promise<number> {
-  if (args.length > 1) throw new CliUsageError('Usage: dsh-remote-over-tailscale login [provider|list]')
+  if (args.length > 1) throw new CliUsageError('Usage: dsh-remote-over-tailnet login [provider|list]')
   const context = await hostContext(runtime)
   const providers = (await context.api.oauthProviders()).filter(item => item.qrStartUrl != null)
   if (args[0] === 'list') {
     write(runtime.stdout, providers.length === 0 ? 'No QR sign-in providers are available.\n'
-      : providers.map(item => `${item.displayName}: dsh-remote-over-tailscale login ${item.id}\n`).join(''))
+      : providers.map(item => `${item.displayName}: dsh-remote-over-tailnet login ${item.id}\n`).join(''))
     return 0
   }
   const selected = args[0] === undefined
     ? providers.find(item => item.id === 'zhihu') ?? providers[0]
     : providers.find(item => item.id === args[0])
-  if (selected === undefined) throw new CliUsageError('OAuth provider unavailable. Run "dsh-remote-over-tailscale login list" to see available providers.')
+  if (selected === undefined) throw new CliUsageError('OAuth provider unavailable. Run "dsh-remote-over-tailnet login list" to see available providers.')
   const provider = selected.id
   const session = await context.api.startOAuthQrLogin(provider)
   const qr = await runtime.renderQr(session.scanUrl)
-  write(runtime.stdout, `Using ${selected.displayName} QR login. Run "dsh-remote-over-tailscale login list" for available providers.\n`)
+  write(runtime.stdout, `Using ${selected.displayName} QR login. Run "dsh-remote-over-tailnet login list" for available providers.\n`)
   write(runtime.stdout, 'Scan this QR code to authorize this Host:\n\n')
   write(runtime.stdout, `${qr.trimEnd()}\n`)
   write(runtime.stdout, `Authorization URL: ${terminalLink(session.scanUrl, runtime.stdout)}\n\nWaiting for authorization...\n`)
@@ -153,7 +153,7 @@ async function login(args: readonly string[], runtime: CliRuntime): Promise<numb
 }
 
 async function status(args: readonly string[], runtime: CliRuntime): Promise<number> {
-  if (args.length !== 0) throw new CliUsageError('Usage: dsh-remote-over-tailscale status')
+  if (args.length !== 0) throw new CliUsageError('Usage: dsh-remote-over-tailnet status')
   const serverUrl = selectedServer()
   const root = await prepareDefaultIdentityDirectory({ env: runtime.env })
   const directory = serverStorageDirectory(root, serverUrl, 'host')
@@ -165,7 +165,7 @@ async function status(args: readonly string[], runtime: CliRuntime): Promise<num
 
   if (!await exists(join(directory, 'device.json'))) {
     lines.push('Device: not initialized', 'Authorization: logged out', 'Credential: unavailable')
-    write(runtime.stdout, `${lines.join('\n')}\n\nRun "dsh-remote-over-tailscale login" to authorize this Host.\n`)
+    write(runtime.stdout, `${lines.join('\n')}\n\nRun "dsh-remote-over-tailnet login" to authorize this Host.\n`)
     return 0
   }
 
@@ -177,7 +177,7 @@ async function status(args: readonly string[], runtime: CliRuntime): Promise<num
   lines.push(`Device: ${identity.name} (${identity.deviceId})`)
   if (stored === undefined) {
     lines.push('Authorization: logged out', 'Credential: unavailable')
-    write(runtime.stdout, `${lines.join('\n')}\n\nRun "dsh-remote-over-tailscale login" to authorize this Host.\n`)
+    write(runtime.stdout, `${lines.join('\n')}\n\nRun "dsh-remote-over-tailnet login" to authorize this Host.\n`)
     return 0
   }
 
@@ -199,7 +199,7 @@ async function status(args: readonly string[], runtime: CliRuntime): Promise<num
 }
 
 async function logout(args: readonly string[], runtime: CliRuntime): Promise<number> {
-  if (args.length !== 0) throw new CliUsageError('Usage: dsh-remote-over-tailscale logout')
+  if (args.length !== 0) throw new CliUsageError('Usage: dsh-remote-over-tailnet logout')
   const serverUrl = selectedServer()
   const deviceName = runtime.env.DSH_REMOTE_DEVICE_NAME ?? hostname()
   let root: string
@@ -251,11 +251,11 @@ async function logout(args: readonly string[], runtime: CliRuntime): Promise<num
 
 async function resetIdentity(args: readonly string[], runtime: CliRuntime): Promise<number> {
   if (args.length > 1) {
-    throw new CliUsageError('Usage: dsh-remote-over-tailscale reset-identity [host|client|all]')
+    throw new CliUsageError('Usage: dsh-remote-over-tailnet reset-identity [host|client|all]')
   }
   const roleArg = args[0]
   if (roleArg !== undefined && roleArg !== 'host' && roleArg !== 'client' && roleArg !== 'all') {
-    throw new CliUsageError('Usage: dsh-remote-over-tailscale reset-identity [host|client|all]')
+    throw new CliUsageError('Usage: dsh-remote-over-tailnet reset-identity [host|client|all]')
   }
   const serverUrl = selectedServer()
   const deviceName = runtime.env.DSH_REMOTE_DEVICE_NAME ?? hostname()
@@ -353,11 +353,11 @@ function cliErrorMessage(error: unknown): string {
 function helpText(): string {
   return [
     'Usage:',
-    '  dsh-remote-over-tailscale login [provider|list]',
-    '  dsh-remote-over-tailscale register <server-token>',
-    '  dsh-remote-over-tailscale status',
-    '  dsh-remote-over-tailscale logout',
-    '  dsh-remote-over-tailscale reset-identity [host|client|all]',
+    '  dsh-remote-over-tailnet login [provider|list]',
+    '  dsh-remote-over-tailnet register <server-token>',
+    '  dsh-remote-over-tailnet status',
+    '  dsh-remote-over-tailnet logout',
+    '  dsh-remote-over-tailnet reset-identity [host|client|all]',
     '',
     'login uses an available QR provider (preferring Zhihu). Use login list to see available providers.',
     `The Server is ${DEFAULT_REMOTE_SERVER_URL}.`,

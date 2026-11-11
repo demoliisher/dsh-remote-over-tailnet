@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "DSH Remote over Tailscale",
+    "title": "Remote Over Tailnet",
     "description": "Tailscale 経由でスマートフォンからローカルの DeepSeek Harness セッションに接続します。逐次ストリーミングに対応し、公開ゲートウェイは不要です。",
     "detail": "locale/README.ja.md"
   }

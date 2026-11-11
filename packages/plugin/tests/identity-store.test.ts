@@ -22,7 +22,7 @@ describe('IdentityStore', () => {
     const home = await temporaryDirectory()
     const env = { DSH_HOME: home }
     const source = join(home, 'remote')
-    const target = join(home, 'ds-harness-remote')
+    const target = join(home, 'dsh-remote-over-tailnet')
     const records: Array<{ directory: string; identity: Awaited<ReturnType<IdentityStore['loadOrCreate']>>; peers: unknown; files: Map<string, Buffer> }> = []
     for (const origin of ['https://first.example.com', 'https://second.example.com']) {
       for (const role of ['host', 'client'] as const) {
@@ -55,7 +55,7 @@ describe('IdentityStore', () => {
     for (const scenario of ['conflict', 'destination-race', 'identity-lock', 'refresh-lock', 'symlink']) {
       const home = await temporaryDirectory()
       const source = join(home, 'remote')
-      const target = join(home, 'ds-harness-remote')
+      const target = join(home, 'dsh-remote-over-tailnet')
       const original = await new IdentityStore({ directory: source }).loadOrCreate('Host')
       if (scenario === 'conflict') await mkdir(target)
       if (scenario === 'destination-race') vi.mocked(rename).mockImplementationOnce(async (_source, destination) => {
@@ -93,7 +93,7 @@ describe('IdentityStore', () => {
       expect(fallback.listTrustedPeers()).toEqual(store.listTrustedPeers())
       expect(await new ServerCredentialStore(fallback.directory).load(credentials.serverUrl, original.deviceId)).toEqual(credentials)
       expect(await readFile(join(source, 'server-credentials.json'))).toEqual(bytes)
-      await expect(stat(join(home, 'ds-harness-remote'))).rejects.toMatchObject({ code: 'ENOENT' })
+      await expect(stat(join(home, 'dsh-remote-over-tailnet'))).rejects.toMatchObject({ code: 'ENOENT' })
     }
   })
 
@@ -104,7 +104,7 @@ describe('IdentityStore', () => {
       const original = await new IdentityStore({ directory: source }).loadOrCreate('Host')
       vi.mocked(rename).mockRejectedValueOnce(Object.assign(new Error('move unavailable'), { code: 'EACCES' }))
       await prepareDefaultIdentityDirectory({ env: { DSH_HOME: home } })
-      const pinPath = join(home, '.ds-harness-remote-migration', 'legacy-root.json')
+      const pinPath = join(home, '.dsh-remote-over-tailnet-migration', 'legacy-root.json')
       if (scenario === 'float-pin') {
         await writeFile(pinPath, JSON.stringify({ schemaVersion: 1, dev: 1.5, ino: 2.5 }), { mode: 0o600 })
         await expect(prepareDefaultIdentityDirectory({ env: { DSH_HOME: home } }), scenario).rejects.toBeInstanceOf(IdentityInvalidError)
@@ -122,7 +122,7 @@ describe('IdentityStore', () => {
       if (scenario === 'replaced') await new IdentityStore({ directory: source }).loadOrCreate('Other Host')
       await expect(prepareDefaultIdentityDirectory({ env: { DSH_HOME: home } }), scenario).rejects.toBeInstanceOf(IdentityInvalidError)
       expect((await readFile(join(backup, 'device.key'), 'utf8')).trim()).toBe(original.privateKey)
-      await expect(stat(join(home, 'ds-harness-remote'))).rejects.toMatchObject({ code: 'ENOENT' })
+      await expect(stat(join(home, 'dsh-remote-over-tailnet'))).rejects.toMatchObject({ code: 'ENOENT' })
     }
   })
 
@@ -158,7 +158,7 @@ describe('IdentityStore', () => {
       const before = await snapshot(source)
       await expect(prepareDefaultIdentityDirectory({ env }), scenario).rejects.toThrow('ownership could not be verified')
       expect(await snapshot(source), scenario).toEqual(before)
-      await expect(stat(join(home, 'ds-harness-remote'))).rejects.toMatchObject({ code: 'ENOENT' })
+      await expect(stat(join(home, 'dsh-remote-over-tailnet'))).rejects.toMatchObject({ code: 'ENOENT' })
     }
   })
 
@@ -316,7 +316,7 @@ describe('IdentityStore', () => {
         await writeFile(join(legacyClientDir, 'device.key'), `${second.privateKey}\n`, { mode: 0o600 })
 
         const migratedRoot = await prepareDefaultIdentityDirectory({ env: { DSH_HOME: home } })
-        expect(migratedRoot).toBe(join(home, 'ds-harness-remote'))
+        expect(migratedRoot).toBe(join(home, 'dsh-remote-over-tailnet'))
         const migratedClientDir = serverStorageDirectory(migratedRoot, serverUrl, 'client')
         const healedClient = await new IdentityStore({ directory: migratedClientDir, role: 'client' }).loadOrCreate('Client')
         expect(healedClient.deviceId).not.toBe(first.deviceId)
@@ -351,7 +351,7 @@ describe('IdentityStore', () => {
         await writeFile(join(legacyClientDir, 'device.key'), `${second.privateKey}\n`, { mode: 0o600 })
 
         const migratedRoot = await prepareDefaultIdentityDirectory({ env: { DSH_HOME: home } })
-        expect(migratedRoot).toBe(join(home, 'ds-harness-remote'))
+        expect(migratedRoot).toBe(join(home, 'dsh-remote-over-tailnet'))
         const migratedHostDir = serverStorageDirectory(migratedRoot, serverUrl, 'host')
         const migratedClientDir = serverStorageDirectory(migratedRoot, serverUrl, 'client')
         expect(await new IdentityStore({ directory: migratedHostDir, role: 'host' }).loadOrCreate('Host')).toEqual(hostIdentity)

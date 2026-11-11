@@ -1,7 +1,7 @@
 {
   "$schema": "https://dsh.community/schemas/dsh-plugin-0.15.json",
-  "id": "community.dsh-remote-over-tailscale",
-  "name": "dsh-remote-over-tailscale",
+  "id": "community.dsh-remote-over-tailnet",
+  "name": "dsh-remote-over-tailnet",
   "version": "0.6.4",
   "manifestVersion": "0.15",
   "facets": {

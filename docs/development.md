@@ -1,10 +1,20 @@
 # 开发、构建与本地验证
 
+ROT 的主要受众是 Windows 上的 DeepSeek Harness Desktop 用户。
+
+## 命名
+
+- 项目全名：`dsh-remote-over-tailnet`
+- 文档简称：ROT
+- UI 显示名与左下角按钮文字：Remote Over Tailnet
+
+包名同时决定客户端 bundle 的模块 id 与安装名，改名时须同步 `packages/plugin/package.json`、`packages/plugin/dsh-plugin.json`、`cordis.patch.yml` 与文档。
+
 ## 环境
 
 - Windows 11 + PowerShell 7（其他平台未验证）
 - Node.js 22 及以上；仓库用 corepack 固定 `pnpm@9.15.4`
-- DSH Desktop 0.2.2-rc.1，`dsh` CLI 通过安装目录下的 `resources/runtime/cli/bin/dsh.cmd` 调用
+- DeepSeek Harness Desktop 0.2.2-rc.1，`dsh` CLI 通过安装目录下的 `resources/runtime/cli/bin/dsh.cmd` 调用
 
 ## 安装与构建
 

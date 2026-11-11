@@ -1,6 +1,6 @@
 # Tailscale 要求与排障
 
-阶段一直接复用系统安装的 Tailscale，插件不创建新的 tailnet 节点。
+ROT 阶段一直接复用系统安装的 Tailscale，插件不创建新的 tailnet 节点。
 
 ## 前置条件
 
@@ -13,7 +13,7 @@
 | 步骤 | 动作 | 失败时的提示 |
 | --- | --- | --- |
 | Tailscale | 读取 `tailscale status --json`，取节点 DNSName 与证书域名 | 未安装、未登录、未运行、离线、无域名，各有对应中文提示 |
-| 本地中继 | 以固定账号密码在 `127.0.0.1:<端口>` 启动中继服务器，数据写入 `$DSH_HOME/ds-harness-remote/tailnet/` | 端口被占用、版本不匹配、已有实例在运行 |
+| 本地中继 | 以固定账号密码在 `127.0.0.1:<端口>` 启动中继服务器，数据写入 `$DSH_HOME/dsh-remote-over-tailnet/tailnet/` | 端口被占用、版本不匹配、已有实例在运行 |
 | HTTPS 地址 | 执行幂等的 `tailscale serve --bg --https=443 http://127.0.0.1:<端口>`，并复查实际转发目标 | 证书未开启时提示去管理台开启，并给出管理台地址 |
 | Host 授权 | 用中继账号密码登录并注册本机 Host 身份 | 账号或密码与服务端不一致时提示并自动重建中继数据 |
 
@@ -33,7 +33,7 @@ tailscale serve status --json
 
 ### 另一实例已启动中继
 
-中继同一时间只能被一个 DSH 实例占用。关闭其他正在运行的 DSH 实例后重试。插件会在 `$DSH_HOME/ds-harness-remote/tailnet/relay.lock` 记录监督进程与中继进程；上次退出异常留下的中继进程会被检测并终止。
+中继同一时间只能被一个 DSH 实例占用。关闭其他正在运行的 DSH 实例后重试。插件会在 `$DSH_HOME/dsh-remote-over-tailnet/tailnet/relay.lock` 记录监督进程与中继进程；上次退出异常留下的中继进程会被检测并终止。
 
 ### 端口被占用
 
@@ -45,7 +45,7 @@ tailscale serve status --json
 
 ### 账号密码丢了
 
-凭据保存在 `$DSH_HOME/ds-harness-remote/tailnet/credentials.json`（权限 0600）。面板的「显示」可以查看并复制；删除该文件后插件会重新生成账号密码，中继数据中的旧令牌随之失效，Host 会自动重新注册。
+凭据保存在 `$DSH_HOME/dsh-remote-over-tailnet/tailnet/credentials.json`（权限 0600）。面板的「显示」可以查看并复制；删除该文件后插件会重新生成账号密码，中继数据中的旧令牌随之失效，Host 会自动重新注册。
 
 ### 想放到数据盘
 

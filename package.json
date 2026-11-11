@@ -1,5 +1,5 @@
 {
-  "name": "dsh-remote-over-tailscale",
+  "name": "dsh-remote-over-tailnet",
   "version": "0.6.4",
   "description": "Tailscale-based remote access host plugin for DeepSeek Harness (fork of ds-harness-remote).",
   "keywords": [
@@ -16,7 +16,7 @@
   "type": "module",
   "main": "./index.js",
   "bin": {
-    "dsh-remote-over-tailscale": "./packages/plugin/bin/dsh-remote-over-tailscale.js"
+    "dsh-remote-over-tailnet": "./packages/plugin/bin/dsh-remote-over-tailnet.js"
   },
   "types": "./packages/plugin/public.d.ts",
   "exports": {
@@ -35,7 +35,7 @@
     "index.js",
     "packages/plugin/dist/index.js",
     "packages/plugin/dist/client.github.js",
-    "packages/plugin/bin/dsh-remote-over-tailscale.js",
+    "packages/plugin/bin/dsh-remote-over-tailnet.js",
     "packages/plugin/public.d.ts",
     "packages/plugin/LICENSE",
     "packages/plugin/server/",
