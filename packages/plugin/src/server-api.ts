@@ -1,4 +1,3 @@
-import type { PairingCredentials } from './pairing-contract.js'
 import { platform } from 'node:os'
 import { fromBase64Url, toBase64Url } from '@dsh-remote/crypto'
 import { deviceTokenPairSchema, type DeviceTokenPair as TokenPair } from '@dsh-remote/protocol'
@@ -21,7 +20,7 @@ interface WebLoginResponse {
 }
 
 export interface DeviceAuthorization {
-  method: 'account' | 'host_registration_code' | 'owned_device' | 'device_pairing'
+  method: 'account'
   account?: string
   expiresAt?: number
   isAdmin?: boolean
@@ -47,7 +46,6 @@ export interface AuthorizedPeerDevice extends ServerHostDevice {
 
 export class HostServerApi {
   readonly baseUrl: string
-  private hostOnly = false
   private identity?: HostIdentity
   private credentials?: ServerCredentials
   private credentialsPromise?: Promise<ServerCredentials>
@@ -58,7 +56,6 @@ export class HostServerApi {
     serverUrl: string,
     private readonly store: ServerCredentialStore,
     private readonly fetchImplementation: FetchImplementation = fetch,
-    private readonly role: 'host' | 'client' = 'host',
   ) {
     this.baseUrl = normalizeServerUrl(serverUrl)
   }
@@ -72,62 +69,11 @@ export class HostServerApi {
     this.lifetime.abort(new ServerApiError('CONNECTION_CLOSED', 'The Server API has been closed.', false))
   }
 
-  pairingHostOnly(): boolean { return this.hostOnly }
-
-  async loadStoredPolicy(): Promise<void> {
-    this.hostOnly = this.role === 'host' && (await this.store.pairingHostOnly() || (await this.store.load(this.baseUrl, this.requireIdentity().deviceId))?.pairingRestricted === true)
-  }
-
-  async adoptPairing(result: PairingCredentials): Promise<void> {
-    const identity = this.requireIdentity()
-    if (this.role !== 'host' || result.device.role !== 'host' || result.device.deviceId !== identity.deviceId || result.device.identityKey !== identity.publicKey)
-      throw new ServerApiError('PAIRING_IDENTITY_INVALID', 'Pairing identity mismatch.', false)
-    if (result.pairingRestricted) {
-      if (!result.inboundOnly) throw new ServerApiError('DEVICE_SCOPE_REQUIRED', 'Paired Host must remain inbound only.', false)
-      this.hostOnly = true
-      await this.store.restrictPairingHostOnly()
-    }
-    this.credentials = await this.withRefreshLock(async () => {
-      const existing = await this.store.load(this.baseUrl, identity.deviceId)
-      if (existing?.account !== undefined && existing.account !== result.account)
-        throw new ServerApiError('PAIRING_ACCOUNT_CONFLICT', 'Pairing cannot replace the current account.', false)
-      if (existing !== undefined && existing.refreshTokenExpiresAt > Date.now() + 30_000) return existing
-      return this.store.save({ serverUrl: this.baseUrl, deviceId: identity.deviceId,
-        authorizationMethod: 'device_pairing', account: result.account, accountKind: result.accountKind,
-        pairingRestricted: result.pairingRestricted, inboundOnly: result.inboundOnly, ...validateTokens(result.tokens) })
-    })
-  }
-
   currentAuthorization(): DeviceAuthorization | undefined {
     if (this.credentials === undefined) return undefined
     return {
       method: this.credentials.authorizationMethod,
       ...(this.credentials.account === undefined ? {} : { account: this.credentials.account }),
-    }
-  }
-
-  /** Check the persisted device credential without issuing or refreshing one. */
-  async hasStoredAuthorization(): Promise<boolean> {
-    const identity = this.requireIdentity()
-    return await this.store.load(this.baseUrl, identity.deviceId) !== undefined
-  }
-
-  async clearAuthorization(): Promise<void> {
-    this.credentials = undefined
-    this.credentialsPromise = undefined
-    await this.store.clear()
-  }
-
-  async revokeCurrentDevice(): Promise<void> {
-    const identity = this.requireIdentity()
-    if (await this.store.load(this.baseUrl, identity.deviceId) === undefined) {
-      await this.clearAuthorization()
-      return
-    }
-    try {
-      await this.request<unknown>('/api/v1/devices/self', { method: 'DELETE' })
-    } finally {
-      await this.clearAuthorization()
     }
   }
 
@@ -171,45 +117,6 @@ export class HostServerApi {
     }
   }
 
-  async authorizeHostWithCode(identity: HostIdentity, code: string): Promise<DeviceAuthorization> {
-    if (this.role !== 'host') {
-      throw new ServerApiError('METHOD_NOT_ALLOWED', 'Host registration codes can only authorize a Host device.', false)
-    }
-    const registrationCode = code.trim().toUpperCase()
-    if (registrationCode.length === 0) {
-      throw new ServerApiError('INVALID_MESSAGE', 'A Host registration code is required.', false)
-    }
-    this.bindIdentity(identity)
-    const tokens = await this.publicRequest<TokenPair>('/api/v1/devices/register-with-code', {
-      method: 'POST',
-      body: JSON.stringify({ v: 1, code: registrationCode, device: this.deviceDescriptor(identity) }),
-    })
-    this.credentials = await this.saveTokens(identity, validateTokens(tokens), {
-      authorizationMethod: 'host_registration_code',
-    })
-    return { method: 'host_registration_code' }
-  }
-
-  async authorizeOwnedRole(
-    identity: HostIdentity,
-    authorizingAccessToken: string,
-    account?: string,
-  ): Promise<DeviceAuthorization> {
-    this.bindIdentity(identity)
-    const tokens = await this.publicRequest<TokenPair>('/api/v1/devices/register-owned-role', {
-      method: 'POST',
-      body: JSON.stringify({ v: 1, device: this.deviceDescriptor(identity) }),
-    }, authorizingAccessToken)
-    this.credentials = await this.saveTokens(identity, validateTokens(tokens), {
-      authorizationMethod: 'owned_device',
-      ...(account === undefined ? {} : { account }),
-    })
-    return {
-      method: 'owned_device',
-      ...(account === undefined ? {} : { account }),
-    }
-  }
-
   async authenticate(identity = this.requireIdentity()): Promise<ServerCredentials> {
     this.bindIdentity(identity)
     if (this.credentials !== undefined && this.credentials.accessTokenExpiresAt > Date.now() + 30_000) {
@@ -225,11 +132,7 @@ export class HostServerApi {
     this.credentials = await this.withRefreshLock(async () => {
       // Another process may have rotated the token while we waited for the lock.
       const stored = await this.store.load(this.baseUrl, identity.deviceId)
-      if (stored === undefined || stored.refreshTokenExpiresAt <= Date.now()) {
-        // A rejected Client read must not implicitly register a signed-out device.
-        if (this.role === 'client') throw new ServerApiError('ACCOUNT_AUTH_REQUIRED', 'Client sign-in is required.', false)
-        return this.register(identity)
-      }
+      if (stored === undefined || stored.refreshTokenExpiresAt <= Date.now()) return this.register(identity)
       if (stored.accessToken !== rejectedAccessToken && stored.accessTokenExpiresAt > Date.now() + 30_000) {
         return stored
       }
@@ -274,39 +177,6 @@ export class HostServerApi {
       ...stored,
       ...validateTokens(tokens),
     })
-  }
-
-  async listDevices(signal?: AbortSignal): Promise<ServerHostDevice[]> {
-    const devices: ServerHostDevice[] = []
-    for await (const page of this.devicePages(signal)) devices.push(...page)
-    return devices
-  }
-
-  async *devicePages(signal?: AbortSignal): AsyncGenerator<ServerHostDevice[]> {
-    let cursor: string | undefined
-    const cursors = new Set<string>()
-    const ids = new Set<string>()
-    do {
-      signal?.throwIfAborted()
-      const query = new URLSearchParams({ limit: '50' })
-      if (cursor !== undefined) query.set('cursor', cursor)
-      const result = await this.request<{ items?: unknown; nextCursor?: unknown }>(`/api/v1/devices?${query}`, { signal })
-      if (!Array.isArray(result.items)) throw new ServerApiError('INVALID_MESSAGE', 'The Server returned an invalid device list.', false)
-      const page = result.items.map(parseHostDevice)
-      const next = result.nextCursor
-      if (next !== undefined && next !== null
-        && (typeof next !== 'string' || next.length === 0 || next.length > 512 || cursors.has(next) || page.length === 0)) {
-        throw new ServerApiError('INVALID_MESSAGE', 'The Server returned an invalid device list cursor.', false)
-      }
-      for (const device of page) {
-        if (ids.has(device.deviceId)) throw new ServerApiError('INVALID_MESSAGE', 'The Server returned a duplicate device.', false)
-        ids.add(device.deviceId)
-      }
-      cursor = typeof next === 'string' ? next : undefined
-      if (cursor !== undefined) cursors.add(cursor)
-      // Older Servers may ignore limit and return all devices with no cursor.
-      yield page
-    } while (cursor !== undefined)
   }
 
   async deviceFor(peerDeviceId: string, signal?: AbortSignal): Promise<AuthorizedPeerDevice> {
@@ -368,11 +238,11 @@ export class HostServerApi {
     return {
       deviceId: identity.deviceId,
       name: identity.name,
-      role: this.role,
+      role: 'host',
       platform: platform(),
       identityKey: identity.publicKey,
       clientVersion: PLUGIN_VERSION,
-      ...(this.role === 'host' && this.harnessVersion !== undefined ? { harnessVersion: this.harnessVersion } : {}),
+      ...(this.harnessVersion === undefined ? {} : { harnessVersion: this.harnessVersion }),
     }
   }
 
@@ -392,19 +262,7 @@ export class HostServerApi {
 
   private async request<TResult>(path: string, init: RequestInit = {}): Promise<TResult> {
     const credentials = await this.authenticate()
-    try {
-      return await this.publicRequest<TResult>(path, init, credentials.accessToken)
-    } catch (error) {
-      // The Server may reject a bearer before its locally cached expiry.
-      // Only retry an explicitly rejected, read-only Client request, once.
-      if (this.role !== 'client' || this.identity?.deviceId !== credentials.deviceId || (init.method ?? 'GET') !== 'GET'
-        || !(error instanceof ServerApiError) || error.status !== 401
-        || (error.code !== 'AUTH_INVALID' && error.code !== 'TOKEN_EXPIRED')) throw error
-      init.signal?.throwIfAborted()
-      const next = await this.refreshCredentials(credentials.accessToken)
-      if (next.account !== credentials.account || this.identity?.deviceId !== credentials.deviceId) throw error
-      return this.publicRequest<TResult>(path, init, next.accessToken)
-    }
+    return this.publicRequest<TResult>(path, init, credentials.accessToken)
   }
 
   private async publicRequest<TResult>(path: string, init: RequestInit, accessToken?: string): Promise<TResult> {
@@ -459,12 +317,6 @@ export class HostServerApi {
   private requireIdentity(): HostIdentity {
     if (this.identity === undefined) throw new ServerApiError('IDENTITY_INVALID', 'The device identity is not loaded.', false)
     return this.identity
-  }
-}
-
-export class ClientServerApi extends HostServerApi {
-  constructor(serverUrl: string, store: ServerCredentialStore, fetchImplementation: FetchImplementation = fetch) {
-    super(serverUrl, store, fetchImplementation, 'client')
   }
 }
 
@@ -546,24 +398,6 @@ const AUTHORIZATION_ERROR_CODES = new Set([
   'DEVICE_REVOKED',
   'DEVICE_OWNERSHIP_REQUIRED',
 ])
-
-function parseHostDevice(value: unknown): ServerHostDevice {
-  const item = requireRecord(value, 'host device')
-  if (item.role !== 'host' || typeof item.deviceId !== 'string' || typeof item.name !== 'string'
-    || typeof item.platform !== 'string' || typeof item.membershipId !== 'string' || item.membershipId.length === 0) {
-    throw new ServerApiError('INVALID_MESSAGE', 'The Server returned invalid host device data.', false)
-  }
-  return {
-    deviceId: item.deviceId,
-    name: item.name,
-    platform: item.platform,
-    membershipId: item.membershipId,
-    ...(typeof item.online === 'boolean' ? { online: item.online } : {}),
-    ...(typeof item.lastSeenAt === 'number' && Number.isSafeInteger(item.lastSeenAt) ? { lastSeenAt: item.lastSeenAt } : {}),
-    ...(typeof item.clientVersion === 'string' ? { clientVersion: item.clientVersion } : {}),
-    ...(typeof item.harnessVersion === 'string' ? { harnessVersion: item.harnessVersion } : {}),
-  }
-}
 
 function parseAuthorizedPeer(value: unknown): AuthorizedPeerDevice {
   const item = requireRecord(value, 'authorized peer')

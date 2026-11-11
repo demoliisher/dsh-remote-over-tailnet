@@ -30,7 +30,7 @@ describe('credential refresh process lock', () => {
     })
     const store = new ServerCredentialStore(path)
     await store.save({
-      serverUrl: 'https://example.com', deviceId: 'test-host', authorizationMethod: 'owned_device',
+      serverUrl: 'https://example.com', deviceId: 'test-host', authorizationMethod: 'account',
       accessToken: 'expired-test-access-value', accessTokenExpiresAt: 1,
       refreshToken: 'initial-test-refresh-value', refreshTokenExpiresAt: Date.now() + 60_000,
     })

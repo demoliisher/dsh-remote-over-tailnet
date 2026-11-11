@@ -5,20 +5,34 @@ describe('plugin config', () => {
   it('applies safe defaults', () => {
     expect(resolveConfig({}, {})).toMatchObject({
       enabled: true,
-      role: 'host',
       hostControl: { enabled: true },
       terminal: { enabled: true },
-      remoteTools: { enabled: true },
+      sidebar: { entry: 'standard' },
+      loopback: { ports: [] },
+      tailnet: { enabled: true, servePort: 443 },
       forceRelay: false,
+      rotatePinnedPeerKey: false,
+      logLevel: 'info',
       reconnect: { enabled: true, initialDelayMs: 4_000, maxDelayMs: 30_000, jitter: 0.2 },
       codex: { enabled: true, binary: 'codex' },
     })
     expect(resolveConfig({}, { DSH_REMOTE_TERMINAL_ENABLED: 'false' }).terminal.enabled).toBe(false)
   })
 
-  it('keeps Remote Tools enabled by default while allowing an explicit opt-out', () => {
-    expect(resolveConfig({}, {}).remoteTools?.enabled).toBe(true)
-    expect(resolveConfig({ remoteTools: { enabled: false } }, {}).remoteTools?.enabled).toBe(false)
+  it('rejects the removed Client-mode role and Remote Tools switches', () => {
+    expect(() => resolveConfig({ role: 'client' } as never, {})).toThrow()
+    expect(() => resolveConfig({ remoteTools: { enabled: false } } as never, {})).toThrow()
+  })
+
+  it('keeps Host control enabled by default while allowing an explicit opt-out', () => {
+    expect(resolveConfig({}, {}).hostControl?.enabled).toBe(true)
+    expect(resolveConfig({ hostControl: { enabled: false } }, {}).hostControl?.enabled).toBe(false)
+  })
+
+  it('normalizes the loopback port list and the sidebar entry', () => {
+    expect(resolveConfig({ loopback: { ports: [4100, 4101, 4100] } }).loopback.ports).toEqual([4100, 4101])
+    expect(resolveConfig({ sidebar: { entry: 'compact' } }).sidebar.entry).toBe('compact')
+    expect(resolveConfig({ sidebar: { entry: 'standard' } }).sidebar.entry).toBe('standard')
   })
 
   it('allows the default-on Codex domain to be disabled and rejects obsolete workspace filters', () => {
@@ -52,6 +66,13 @@ describe('plugin config', () => {
     expect(resolveConfig({ serverUrl: 'http://[fe80::1]:8080' }).serverUrl).toBe('http://[fe80::1]:8080')
     expect(() => resolveConfig({ serverUrl: 'http://[2001:4860:4860::8888]:8080' })).toThrow(/HTTPS/)
     expect(normalizeServerUrl('https://REMOTE.example.com/')).toBe('https://remote.example.com')
+  })
+
+  it('reads the server URL and device name from the environment', () => {
+    expect(resolveConfig({}, { DSH_REMOTE_SERVER: 'http://127.0.0.1:8080/' }).serverUrl).toBe('http://127.0.0.1:8080')
+    expect(resolveConfig({ serverUrl: 'http://localhost:9000' }, { DSH_REMOTE_SERVER: 'http://127.0.0.1:8080' }).serverUrl)
+      .toBe('http://localhost:9000')
+    expect(resolveConfig({}, { DSH_REMOTE_DEVICE_NAME: 'host-from-env' }).deviceName).toBe('host-from-env')
   })
 
   it('rejects an inverted reconnect range', () => {

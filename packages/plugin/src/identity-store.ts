@@ -1,4 +1,3 @@
-import { savedPairingSchema } from './pairing-contract.js'
 import { createHash } from 'node:crypto'
 import type { BigIntStats } from 'node:fs'
 import { chmod, lstat, mkdir, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
@@ -55,14 +54,8 @@ export interface IdentityStoreOptions {
   directory?: string
   env?: NodeJS.ProcessEnv
   homeDirectory?: string
-  role?: RemoteDeviceRole
 }
 
-export interface ResetIdentityOptions extends IdentityStoreOptions {
-  createIdentityStore?: (options: IdentityStoreOptions) => IdentityStore
-}
-
-export type RemoteDeviceRole = 'host' | 'client'
 export type IdentityErrorCode = 'IDENTITY_INVALID' | 'IDENTITY_LOCKED' | 'STORAGE_CONFLICT'
 
 export class IdentityInvalidError extends Error {
@@ -81,14 +74,12 @@ export class IdentityStore {
   private peers = new Map<string, TrustedPeer>()
   private peerSaveChain: Promise<void> = Promise.resolve()
   private readonly defaultOptions?: IdentityStoreOptions
-  readonly role?: RemoteDeviceRole
 
   constructor(options: IdentityStoreOptions = {}) {
     const env = options.env ?? process.env
     const dshHome = env.DSH_HOME || join(options.homeDirectory ?? homedir(), '.dsh')
     this.storageDirectory = options.directory ?? join(dshHome, 'dsh-remote-over-tailnet')
     this.defaultOptions = options.directory === undefined ? options : undefined
-    this.role = options.role
   }
 
   async loadOrCreate(deviceName: string): Promise<HostIdentity> {
@@ -104,9 +95,8 @@ export class IdentityStore {
   }
 
   /**
-   * Read and verify an existing identity without creating files, mutating
-   * device metadata, or triggering client self-heal. Returns `undefined` when
-   * neither identity file exists yet.
+   * Read and verify an existing identity without creating files or mutating
+   * device metadata. Returns `undefined` when neither identity file exists yet.
    */
   async loadExisting(): Promise<HostIdentity | undefined> {
     if (this.defaultOptions !== undefined) this.storageDirectory = await prepareDefaultIdentityDirectory(this.defaultOptions)
@@ -136,12 +126,7 @@ export class IdentityStore {
     const devicePath = join(this.directory, 'device.json')
     const keyPath = join(this.directory, 'device.key')
     const [hasDevice, hasKey] = await Promise.all([exists(devicePath), exists(keyPath)])
-    const isClientRole = this.role === 'client' || (this.role === undefined && isScopedClientDirectory(this.directory))
     if (hasDevice !== hasKey) {
-      if (isClientRole && await canAutoHealClientIdentity(this.directory)) {
-        await removeIdentityRecords(this.directory)
-        return this.createAndReadIdentityLocked(devicePath, keyPath, deviceName)
-      }
       throw new IdentityInvalidError('device identity is incomplete; repair it explicitly before reconnecting')
     }
 
@@ -149,18 +134,7 @@ export class IdentityStore {
       return this.createAndReadIdentityLocked(devicePath, keyPath, deviceName)
     }
 
-    let identity: HostIdentity
-    try {
-      identity = await this.readIdentity(devicePath, keyPath, deviceName)
-    } catch (error) {
-      if (error instanceof IdentityInvalidError
-        && isClientRole
-        && await canAutoHealClientIdentity(this.directory)) {
-        await removeIdentityRecords(this.directory)
-        return this.createAndReadIdentityLocked(devicePath, keyPath, deviceName)
-      }
-      throw error
-    }
+    const identity = await this.readIdentity(devicePath, keyPath, deviceName)
     // Only a verified pair makes the leftovers dead weight. In the #276 residue
     // the surviving device.key.*.tmp is the only private key that still matches
     // device.json, so a failed verification keeps it for manual recovery.
@@ -380,61 +354,6 @@ export async function prepareDefaultIdentityDirectory(
   })
 }
 
-/**
- * Reset the selected role identities and credentials in either an explicit
- * storage root or the default `$DSH_HOME` root. When legacy `<DSH_HOME>/remote`
- * could not be migrated only because one of its owned role identities was
- * corrupt, resetting that role repairs the legacy tree first and then completes
- * the standard migration without creating a conflicting second root.
- */
-export async function resetDefaultIdentityRoles(
-  roles: readonly RemoteDeviceRole[],
-  serverUrl: string | undefined,
-  deviceName: string,
-  options: ResetIdentityOptions = {},
-): Promise<string> {
-  const createStore = options.createIdentityStore ?? (storeOptions => new IdentityStore(storeOptions))
-  const resetRolesInRoot = async (root: string): Promise<void> => {
-    if (serverUrl === undefined) {
-      if (!roles.includes('host')) return
-      const identities = createStore({ directory: root, env: options.env, homeDirectory: options.homeDirectory, role: 'host' })
-      await identities.reset(deviceName)
-      await new ServerCredentialStore(root).clear()
-      return
-    }
-    for (const role of roles) {
-      const directory = serverStorageDirectory(root, serverUrl, role)
-      const identities = createStore({ directory, env: options.env, homeDirectory: options.homeDirectory, role })
-      await identities.reset(deviceName)
-      await new ServerCredentialStore(directory).clear()
-    }
-  }
-
-  if (options.directory !== undefined) {
-    await resetRolesInRoot(options.directory)
-    return options.directory
-  }
-
-  try {
-    const root = await prepareDefaultIdentityDirectory(options)
-    await resetRolesInRoot(root)
-    return root
-  } catch (error) {
-    if (!(error instanceof IdentityInvalidError) || error.code !== 'IDENTITY_INVALID') {
-      throw error
-    }
-    const env = options.env ?? process.env
-    const home = env.DSH_HOME || join(options.homeDirectory ?? homedir(), '.dsh')
-    const source = join(home, 'remote')
-    const target = join(home, 'dsh-remote-over-tailnet')
-    const [old, current] = await Promise.all([storageDirectoryStat(source), storageDirectoryStat(target)])
-    if (old === undefined || current !== undefined) throw error
-    await assertStorageIdle(source)
-    await resetRolesInRoot(source)
-    return prepareDefaultIdentityDirectory(options)
-  }
-}
-
 /** Legacy storage has no owner marker. Require its complete known layout and
  * cryptographically consistent identities, rather than trusting the directory name.
  * Read-only: never repair, create peers, rename devices or refresh tokens here.
@@ -450,15 +369,12 @@ export async function assertOwnedRemoteStorage(root: string): Promise<void> {
     'device.key',
     'trusted-peers.json',
     'server-credentials.json',
-    'host-pairing.json',
-    'pairing-host-only.json',
   ])
   let identities = 0
-  const checkIdentity = async (directory: string, scope?: string, role?: RemoteDeviceRole): Promise<void> => {
+  const checkIdentity = async (directory: string, scope?: string): Promise<void> => {
     const entries = (await readdir(directory, { withFileTypes: true })).filter(entry => !(directory === root && entry.name === 'servers' && entry.isDirectory()))
     for (const entry of entries) {
-      const allowedFile = identityFiles.has(entry.name) || (role === 'client' && isIdentityTempArtifact(entry.name))
-      if (!entry.isFile() || !allowedFile) throw rejected('STORAGE_CONFLICT')
+      if (!entry.isFile() || !identityFiles.has(entry.name)) throw rejected('STORAGE_CONFLICT')
       const metadata = await lstat(join(directory, entry.name))
       if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1 || metadata.size > 16 * 1024 * 1024) {
         throw rejected('STORAGE_CONFLICT')
@@ -468,20 +384,12 @@ export async function assertOwnedRemoteStorage(root: string): Promise<void> {
     if (!names.has('device.json') && !names.has('device.key')) throw rejected('STORAGE_CONFLICT')
     failureCode = 'IDENTITY_INVALID'
     if (!names.has('device.json') || !names.has('device.key')) {
-      if (role === 'client' && await isRepairableLegacyClientDirectory(directory, names)) {
-        identities++
-        return
-      }
       throw rejected('IDENTITY_INVALID')
     }
     await assertPrivateMode(join(directory, 'device.key'))
     const record = identitySchema.parse(JSON.parse(await readFile(join(directory, 'device.json'), 'utf8')))
     const key = (await readFile(join(directory, 'device.key'), 'utf8')).trim()
     if (generateKeyPair(fromBase64Url(key)).publicKey !== record.publicKey) {
-      if (role === 'client' && await isRepairableLegacyClientDirectory(directory, names)) {
-        identities++
-        return
-      }
       throw rejected('IDENTITY_INVALID')
     }
     if (names.has('trusted-peers.json')) {
@@ -504,20 +412,6 @@ export async function assertOwnedRemoteStorage(root: string): Promise<void> {
         throw rejected('STORAGE_CONFLICT')
       }
     }
-    if (names.has('pairing-host-only.json')) {
-      await assertPrivateMode(join(directory, 'pairing-host-only.json'))
-      z.object({ hostOnly: z.literal(true) }).strict().parse(JSON.parse(await readFile(join(directory, 'pairing-host-only.json'), 'utf8')))
-    }
-    if (names.has('host-pairing.json')) {
-      await assertPrivateMode(join(directory, 'host-pairing.json'))
-      const pairing = savedPairingSchema.parse(JSON.parse(await readFile(join(directory, 'host-pairing.json'), 'utf8')))
-      if (pairing.deviceId !== record.deviceId || pairing.session.host.deviceId !== record.deviceId || pairing.session.host.identityKey !== record.publicKey || pairing.session.host.role !== 'host') throw rejected('IDENTITY_INVALID')
-      const origin = new URL(pairing.serverUrl)
-      if (!['http:', 'https:'].includes(origin.protocol) || origin.origin !== pairing.serverUrl) throw rejected('IDENTITY_INVALID')
-      if (scope !== undefined && createHash('sha256').update(origin.origin).digest('hex').slice(0, 24) !== scope) {
-        throw rejected('STORAGE_CONFLICT')
-      }
-    }
     identities++
   }
   try {
@@ -534,8 +428,8 @@ export async function assertOwnedRemoteStorage(root: string): Promise<void> {
       for (const scope of await readdir(join(root, 'servers'), { withFileTypes: true })) {
         if (!scope.isDirectory() || !/^[a-f0-9]{24}$/.test(scope.name)) throw rejected('STORAGE_CONFLICT')
         for (const role of await readdir(join(root, 'servers', scope.name), { withFileTypes: true })) {
-          if (!role.isDirectory() || (role.name !== 'host' && role.name !== 'client')) throw rejected('STORAGE_CONFLICT')
-          await checkIdentity(join(root, 'servers', scope.name, role.name), scope.name, role.name)
+          if (!role.isDirectory() || role.name !== 'host') throw rejected('STORAGE_CONFLICT')
+          await checkIdentity(join(root, 'servers', scope.name, role.name), scope.name)
         }
       }
     }
@@ -547,24 +441,6 @@ export async function assertOwnedRemoteStorage(root: string): Promise<void> {
     // Do not surface schema errors or file contents that might contain secrets.
     throw rejected(failureCode)
   }
-}
-
-async function isRepairableLegacyClientDirectory(directory: string, names: ReadonlySet<string>): Promise<boolean> {
-  if (names.has('server-credentials.json') || names.has('host-pairing.json') || names.has('pairing-host-only.json')) return false
-  if (names.has('trusted-peers.json')) {
-    const peers = trustedPeersSchema.parse(JSON.parse(await readFile(join(directory, 'trusted-peers.json'), 'utf8'))).peers
-    if (peers.length > 0) return false
-  }
-  if (names.has('device.json')) {
-    const record = identitySchema.parse(JSON.parse(await readFile(join(directory, 'device.json'), 'utf8')))
-    if (fromBase64Url(record.publicKey).byteLength !== 32) return false
-  }
-  if (names.has('device.key')) {
-    await assertPrivateMode(join(directory, 'device.key'))
-    const key = (await readFile(join(directory, 'device.key'), 'utf8')).trim()
-    generateKeyPair(fromBase64Url(key))
-  }
-  return true
 }
 
 async function storageDirectoryStat(path: string): Promise<BigIntStats | undefined> {
@@ -592,10 +468,10 @@ async function assertStorageIdle(directory: string): Promise<void> {
   }
 }
 
-export function serverStorageDirectory(root: string, serverUrl: string, role: RemoteDeviceRole): string {
+export function serverStorageDirectory(root: string, serverUrl: string): string {
   const origin = new URL(serverUrl).origin
   const scope = createHash('sha256').update(origin).digest('hex').slice(0, 24)
-  return join(root, 'servers', scope, role)
+  return join(root, 'servers', scope, 'host')
 }
 
 export function fingerprint(publicKey: string): string {
@@ -737,40 +613,6 @@ function ownerExited(record: string): boolean {
   }
 }
 
-function isScopedClientDirectory(directory: string): boolean {
-  return /[\\/]servers[\\/][a-f0-9]{24}[\\/]client$/.test(directory)
-}
-
-/**
- * Narrow client self-heal is allowed only when the directory contains nothing
- * but uncredentialed, unpeered client identity files. Any credential record,
- * refresh lock, non-empty or unreadable trusted-peers file, symlink, or unknown
- * entry fails closed so existing authorization or recovery material is kept.
- */
-async function canAutoHealClientIdentity(directory: string): Promise<boolean> {
-  try {
-    const entries = await readdir(directory, { withFileTypes: true })
-    for (const entry of entries) {
-      if (isLockArtifact(entry.name)) continue
-      const entryPath = join(directory, entry.name)
-      const metadata = await lstat(entryPath)
-      if (!metadata.isFile() || metadata.isSymbolicLink()) return false
-      if (entry.name === 'device.json' || entry.name === 'device.key' || isIdentityTempArtifact(entry.name)) {
-        continue
-      }
-      if (entry.name === 'trusted-peers.json') {
-        const parsed = trustedPeersSchema.parse(JSON.parse(await readFile(entryPath, 'utf8')))
-        if (parsed.peers.length > 0) return false
-        continue
-      }
-      return false
-    }
-    return true
-  } catch {
-    return false
-  }
-}
-
 async function ensureDirectory(directory: string): Promise<void> {
   await mkdir(directory, { recursive: true, mode: 0o700 })
   await chmod(directory, 0o700)
@@ -789,21 +631,16 @@ async function removeIdentityRecords(directory: string): Promise<void> {
     .map(name => unlink(join(directory, name)).catch(() => undefined)))
 }
 
-function isLockArtifact(name: string): boolean {
-  return name === LOCK_FILE_NAME || name.startsWith(`${LOCK_FILE_NAME}.takeover-`)
-}
-
 function isIdentityTempArtifact(name: string): boolean {
   return (name.startsWith('device.json.') || name.startsWith('device.key.')) && name.endsWith('.tmp')
 }
 
 function isOwnedIdentityRecord(name: string): boolean {
-  if (name === 'device.json' || name === 'device.key' || name === 'trusted-peers.json' || name === 'host-pairing.json') return true
+  if (name === 'device.json' || name === 'device.key' || name === 'trusted-peers.json') return true
   return (
     name.startsWith('device.json.')
     || name.startsWith('device.key.')
     || name.startsWith('trusted-peers.json.')
-    || name.startsWith('host-pairing.json.')
   ) && name.endsWith('.tmp')
 }
 

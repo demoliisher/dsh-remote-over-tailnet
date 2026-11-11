@@ -7,11 +7,9 @@ export const DEFAULT_REMOTE_SERVER_URL = 'http://127.0.0.1:8080'
 
 export interface Config {
   enabled?: boolean
-  role?: 'host' | 'client' | 'both'
   serverUrl?: string
   deviceName?: string
   terminal?: { enabled?: boolean }
-  remoteTools?: { enabled?: boolean }
   /** Where the Desktop client shows the Remote entry: beside Settings or in the account row. */
   sidebar?: { entry?: 'standard' | 'compact' }
   hostControl?: { enabled?: boolean }
@@ -55,7 +53,6 @@ export interface ResolvedCodexConfig {
 
  export interface ResolvedConfig {
   enabled: boolean
-  role: 'host' | 'client' | 'both'
   serverUrl?: string
   deviceName: string
   forceRelay: boolean
@@ -68,7 +65,6 @@ export interface ResolvedCodexConfig {
     jitter: number
   }
   terminal: { enabled: boolean }
-  remoteTools?: { enabled: boolean }
   sidebar: { entry: 'standard' | 'compact' }
   hostControl?: { enabled: boolean }
   loopback: { ports: number[] }
@@ -96,11 +92,9 @@ export type ConfigInput = Config | VolatileSnapshot<Config>
  */
 export const entryConfigSchema = s.object({
   enabled: s.boolean(),
-  role: s.union(['host', 'client', 'both'] as const),
   serverUrl: s.string(),
   deviceName: s.string(),
   terminal: s.object({ enabled: s.boolean() }),
-  remoteTools: s.object({ enabled: s.boolean() }),
   sidebar: s.object({ entry: s.union(['standard', 'compact'] as const) }),
   hostControl: s.object({ enabled: s.boolean() }),
   loopback: s.object({ ports: s.array(s.number()) }),
@@ -148,11 +142,9 @@ const reconnectSchema = z.union([
 
 const configSchema = z.object({
   enabled: z.boolean().optional(),
-  role: z.enum(['host', 'client', 'both']).optional(),
   serverUrl: z.string().url().optional(),
   deviceName: z.string().trim().min(1).max(80).optional(),
   terminal: z.object({ enabled: z.boolean().optional() }).strict().optional(),
-  remoteTools: z.object({ enabled: z.boolean().optional() }).strict().optional(),
   sidebar: z.object({ entry: z.enum(['standard', 'compact']).optional() }).strict().optional(),
   hostControl: z.object({ enabled: z.boolean().optional() }).strict().optional(),
   loopback: z.object({ ports: z.array(z.number().int().min(1024).max(65535)).max(16).optional() }).strict().optional(),
@@ -183,12 +175,10 @@ export function resolveConfig(input: ConfigInput = {}, env: NodeJS.ProcessEnv = 
   }
   return {
     enabled: parsed.enabled ?? true,
-    role: parsed.role ?? 'host',
     ...(serverUrl === undefined ? {} : { serverUrl }),
     deviceName: parsed.deviceName ?? env.DSH_REMOTE_DEVICE_NAME ?? hostname(),
     hostControl: { enabled: parsed.hostControl?.enabled ?? true },
     terminal: { enabled: parsed.terminal?.enabled ?? (env.DSH_REMOTE_TERMINAL_ENABLED === undefined || env.DSH_REMOTE_TERMINAL_ENABLED === 'true') },
-    remoteTools: { enabled: parsed.remoteTools?.enabled ?? true },
     sidebar: { entry: parsed.sidebar?.entry === 'compact' ? 'compact' : 'standard' },
     loopback: { ports: [...new Set(parsed.loopback?.ports ?? [])] },
     tailnet: {

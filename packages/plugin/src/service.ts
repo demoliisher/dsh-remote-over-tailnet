@@ -1,5 +1,3 @@
-import { HostPairing } from './host-pairing.js'
-import type { HostPairingView } from './pairing-contract.js'
 import { WorkspaceUploadHost } from './workspace-upload.js'
 import { workspaceUploadRootResolver } from './workspace-upload-authority.js'
 import { LoopbackHost } from './loopback-host.js'
@@ -43,6 +41,8 @@ export interface HostConnectedClient {
 export interface HostRemoteStatus {
   deviceId?: string
   configured: boolean
+  /** 「允许控制本机」开关：关闭时控制连接不启动，设备身份与授权保留。 */
+  enabled: boolean
   online: boolean
   reconnecting: boolean
   recoveryExpiresAt?: number
@@ -51,7 +51,6 @@ export interface HostRemoteStatus {
   account?: string
   authorized: boolean
   accountRequired: boolean
-  pairingHostOnly?: boolean
   connectedClients: HostConnectedClient[]
 }
 
@@ -65,7 +64,7 @@ export class HostPluginRuntime {
   private readonly serverApi?: HostServerApi
   private serverConnection?: HostServerConnection
   private harnessVersion?: string
-  private pairing?: HostPairing
+  private controlEnabled: boolean
   private closed = false
   private readonly codex: CodexRemoteDomain
   private readonly codexWorkspaceState = new CodexWorkspaceState(key => TerminalPolicy.releaseOwner(this.terminalOwners, key))
@@ -86,6 +85,7 @@ export class HostPluginRuntime {
   ) {
     this.terminalEnabled = config.terminal.enabled
     this.loopbackPorts = [...config.loopback.ports]
+    this.controlEnabled = config.hostControl?.enabled !== false
     this.codex = new CodexRemoteDomain(config.codex, logger)
     this.connections = new ConnectionController(this.identities, (context, send) => {
       const peerGateway = this.localGateway?.createPeer?.() ?? this.localGateway
@@ -191,10 +191,8 @@ export class HostPluginRuntime {
       this.harnessVersion = await this.readHarnessVersion()
       this.serverApi.setHarnessVersion(this.harnessVersion)
       this.serverApi.bindIdentity(this.identity)
-      await this.serverApi.loadStoredPolicy()
-      this.initializePairing()
       this.serverConnection = this.createServerConnection(this.identity)
-      if (this.config.hostControl?.enabled !== false) this.serverConnection.start()
+      if (this.controlEnabled) this.serverConnection.start()
     }
   }
 
@@ -214,6 +212,7 @@ export class HostPluginRuntime {
     return {
       ...(this.identity === undefined ? {} : { deviceId: this.identity.deviceId }),
       configured: this.serverApi !== undefined,
+      enabled: this.controlEnabled,
       online: this.serverConnection?.isOnline() ?? false,
       reconnecting: this.serverConnection?.isReconnecting() ?? false,
       recoveryExpiresAt: this.serverConnection?.recoveryExpiresAt(),
@@ -223,32 +222,9 @@ export class HostPluginRuntime {
       ...(error === undefined ? {} : { error }),
       ...(authorization?.account === undefined ? {} : { account: authorization.account }),
       authorized: authorization !== undefined,
-      pairingHostOnly: this.serverApi?.pairingHostOnly() ?? false,
       accountRequired: error === 'ACCOUNT_AUTH_REQUIRED' || error === 'AUTH_REQUIRED' || error === 'AUTH_INVALID' || error === 'TOKEN_EXPIRED' || error === 'DEVICE_REVOKED' || error === 'DEVICE_OWNERSHIP_REQUIRED',
       connectedClients: this.listConnectedClients(),
     }
-  }
-
-  private initializePairing(): void {
-    this.pairing?.close()
-    if (!this.serverApi || !this.identity || !this.config.serverUrl) { this.pairing = undefined; return }
-    this.pairing = new HostPairing(this.config.serverUrl!, this.identities.directory, this.identity, {
-      deviceId: this.identity.deviceId, name: this.identity.name, role: 'host', platform: process.platform,
-      identityKey: this.identity.publicKey,
-      ...(this.harnessVersion === undefined ? {} : { harnessVersion: this.harnessVersion }),
-    }, async result => { await this.serverApi!.adoptPairing(result); if (!this.closed) this.serverConnection?.reconnect() })
-  }
-
-  async pairingControl(action: 'start' | 'status' | 'confirm' | 'cancel', input: { sessionId?: string; verificationCode?: string }): Promise<HostPairingView | undefined> {
-    if (this.pairing === undefined || this.closed) throw new ServerApiError('SERVER_NOT_CONFIGURED', 'Configure and save the Server URL before pairing.', false)
-    if (action === 'start') return this.pairing.start()
-    if (action === 'status') return this.pairing.status()
-    if (typeof input.sessionId !== 'string') throw new ServerApiError('INVALID_MESSAGE', 'A specific pairing session is required.', false)
-    return action === 'confirm' ? this.pairing.confirm(input.sessionId, input.verificationCode) : this.pairing.cancel(input.sessionId)
-  }
-
-  async hasStoredAuthorization(): Promise<boolean> {
-    return this.serverApi?.hasStoredAuthorization() ?? false
   }
 
   private listConnectedClients(): HostConnectedClient[] {
@@ -275,46 +251,18 @@ export class HostPluginRuntime {
     this.serverConnection.reconnect()
   }
 
-  async clearHostAuthorization(): Promise<void> {
-    await this.pairing?.discard()
-    this.pairing = undefined
-    await this.serverConnection?.stop()
-    let revokeFailure: unknown
-    try {
-      await this.serverApi?.revokeCurrentDevice()
-    } catch (error) {
-      revokeFailure = error
+  /**
+   * 「允许控制本机」开关。关闭只停控制连接，设备授权与身份保持不变；
+   * 重新打开时直接恢复连接，本机凭据缺失时由调用方先重新授权。
+   */
+  async setHostControl(enabled: boolean): Promise<void> {
+    if (this.closed) throw new Error('remote runtime is closed')
+    if (this.serverConnection === undefined) {
+      throw new ServerApiError('SERVER_NOT_CONFIGURED', 'Configure serverUrl before changing Host access.', false)
     }
-    this.identity = await this.identities.reset(this.config.deviceName)
-    this.serverApi?.bindIdentity(this.identity)
-    if (this.serverApi !== undefined) this.serverConnection = this.createServerConnection(this.identity)
-    this.initializePairing()
-    this.logger.info('Host authorization cleared')
-    if (revokeFailure !== undefined) throw revokeFailure
-  }
-
-  async authorizeHostAsOwned(accessToken: string, account?: string): Promise<DeviceAuthorization> {
-    if (this.serverApi === undefined) {
-      throw new ServerApiError('SERVER_NOT_CONFIGURED', 'Configure serverUrl before enabling Host access.', false)
-    }
-    let result
-    try {
-      result = await this.serverApi.authorizeOwnedRole(this.currentIdentity(), accessToken, account)
-    } catch (error) {
-      if (!(error instanceof ServerApiError) || error.code !== 'DEVICE_REVOKED') throw error
-      await this.serverConnection?.stop()
-      await this.pairing?.discard()
-      this.pairing = undefined
-      this.identity = await this.identities.reset(this.config.deviceName)
-      this.serverApi.bindIdentity(this.identity)
-      this.serverConnection = this.createServerConnection(this.identity)
-      this.initializePairing()
-      result = await this.serverApi.authorizeOwnedRole(this.identity, accessToken, account)
-      this.logger.info('Rotated revoked Host identity before owned-device authorization')
-    }
-    this.serverConnection?.resume()
-    this.logger.info('Host authorized as an owned device')
-    return result
+    this.controlEnabled = enabled
+    if (enabled) this.serverConnection.resume()
+    else await this.serverConnection.stop()
   }
 
   async authorizeHostWithAccount(email: string, password: string): Promise<DeviceAuthorization> {
@@ -323,27 +271,14 @@ export class HostPluginRuntime {
     }
     const result = await this.serverApi.authorizeWithAccount(this.currentIdentity(), email, password, async () => {
       await this.serverConnection?.stop()
-      await this.pairing?.discard()
-      this.pairing = undefined
       this.identity = await this.identities.reset(this.config.deviceName)
       this.serverApi!.bindIdentity(this.identity)
       this.serverConnection = this.createServerConnection(this.identity)
-      this.initializePairing()
       this.logger.info('Rotated revoked Host identity before account authorization')
       return this.identity
     })
-    this.serverConnection?.resume()
+    if (this.controlEnabled) this.serverConnection?.resume()
     this.logger.info('Host account authorized')
-    return result
-  }
-
-  async authorizeHostWithCode(code: string): Promise<DeviceAuthorization> {
-    if (this.serverApi === undefined) {
-      throw new ServerApiError('SERVER_NOT_CONFIGURED', 'Configure serverUrl before entering a Host registration code.', false)
-    }
-    const result = await this.serverApi.authorizeHostWithCode(this.currentIdentity(), code)
-    this.serverConnection?.resume()
-    this.logger.info('Host registration code authorized')
     return result
   }
 
@@ -381,7 +316,6 @@ export class HostPluginRuntime {
   async close(): Promise<void> {
     if (this.closed) return
     this.closed = true
-    this.pairing?.close()
     this.serverApi?.close()
     await this.serverConnection?.stop()
     await this.connections.close()

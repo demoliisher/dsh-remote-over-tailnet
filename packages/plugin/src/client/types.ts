@@ -1,17 +1,14 @@
-import type { LocaleKey } from '../client-locale.js'
-import type { RemoteFileContentProvider } from '../remote-file-content-provider.js'
-
-export interface ControlResult<T = unknown> {
-  ok: boolean
-  value?: T
-  error?: { code?: string; message?: string; details?: Record<string, unknown> }
-}
-
-export interface FileViewerClientServiceLike {
-  registerContentProvider(provider: RemoteFileContentProvider): () => void
-}
-
-export type RemoteTransportPreference = 'lan' | 'p2p' | 'turn' | 'relay'
+/** 本机控制通道的应答封套，与 Host 侧 control-result.ts 的结构一致。 */
+export type ControlResult<T = unknown> =
+  | { ok: true; value: T }
+  | {
+      ok: false
+      error?: {
+        code?: string
+        message?: string
+        details?: { remoteCode?: string } & Record<string, unknown>
+      }
+    }
 
 /** 面板上单个编排步骤的状态；ok 为 null 表示尚未执行。 */
 export interface TailnetStepView {
@@ -49,197 +46,38 @@ export interface TailnetCredentialsView {
   password: string
 }
 
+/** 一台已经连上本机 Host 的客户端设备。 */
+export interface RemoteConnectedClient {
+  deviceId: string
+  name: string
+  platform?: string
+  mode?: 'LAN' | 'P2P' | 'TURN' | 'Relay'
+}
+
+/** 本机 Host 侧的账号授权与客户端连接状态。 */
+export interface RemoteHostStatus {
+  deviceId?: string
+  account?: string
+  authorized: boolean
+  accountRequired: boolean
+  enabled: boolean
+  online: boolean
+  reconnecting: boolean
+  lastActiveAt?: number
+  recoveryExpiresAt?: number
+  error?: string
+  connectedClients: RemoteConnectedClient[]
+}
+
 export interface RemoteStatus {
-  mode: 'local' | 'remote'
-  backend?: 'harness' | 'codex' | 'cursor' | 'antigravity' | 'pi' | 'opencode' | 'claude' | 'hermes'
-  target?: { deviceId: string; name: string }
-  workspaceSelection?: RemoteWorkspaceSelection
-  available: boolean
-  controlUnavailable?: boolean
+  deviceName?: string
   startupError?: {
     code: string
     message: string
   }
-  deviceName?: string
-  deviceId?: string
-  serverUrl?: string
-  connected?: boolean
-  recoveryGeneration?: number
-  clientAuthRequired?: boolean
-  connectedTargetDeviceId?: string
-  transport?: 'LAN' | 'P2P' | 'TURN' | 'Relay' | 'Disconnected'
-  preferredTransports?: RemoteTransportPreference[]
-  connectionProgress?: {
-    targetDeviceId: string
-    phase: 'checking-host' | 'authorizing-peer' | 'probing' | 'connected'
-    activeTransports?: RemoteTransportPreference[]
-  }
-  remoteFeatures?: {
-    commandList: boolean
-    fileViewer: boolean
-    terminal?: boolean
-    pluginRoute?: boolean
-    codex?: boolean
-    cursor?: boolean
-    antigravity?: boolean
-    pi?: boolean
-    opencode?: boolean
-    claude?: boolean
-    hermes?: boolean
-    workspaceTypes?: ReadonlyArray<{ id: string; name: string; capability: string; available: boolean }>
-  }
-  network?: RemoteNetworkDetails
-  /** npm dist-tags lookup result; present after the plugin's first successful registry check. */
-  update?: {
-    currentVersion: string
-    latestVersion: string
-    checkedAt: number
-  }
-  tailnet?: TailnetView
   hostAuthorizationAvailable: boolean
-  host?: {
-    deviceId?: string
-    pairingHostOnly?: boolean
-    configured: boolean
-    online: boolean
-    reconnecting: boolean
-    recoveryExpiresAt?: number
-    lastActiveAt?: number
-    error?: string
-    account?: string
-    authorized: boolean
-    accountRequired: boolean
-    connectedClients?: Array<{
-      deviceId: string
-      name: string
-      platform?: string
-      mode?: 'LAN' | 'P2P' | 'TURN' | 'Relay'
-    }>
-  }
-}
-
-interface RemoteNetworkDetails {
-  connectionId?: string
-  connectedAt?: number
-  recoveryExpiresAt?: number
-  controlChannelUrl: string
-  controlChannelState: 'connecting' | 'open' | 'closing' | 'closed'
-  preferredTransports: RemoteTransportPreference[]
-  local: { deviceId: string; name: string; platform: string }
-  remote: { deviceId: string; name: string; platform: string }
-  webRtc?: {
-    mode?: 'LAN' | 'P2P' | 'TURN'
-    connectionState: string
-    iceConnectionState: string
-    dataChannelState?: string
-    localCandidateType?: string
-    remoteCandidateType?: string
-    localAddress?: string
-    remoteAddress?: string
-    protocol?: string
-    relayProtocol?: string
-    currentRoundTripTimeMs?: number
-    availableOutgoingBitrate?: number
-    bytesSent?: number
-    bytesReceived?: number
-  }
-}
-
-export interface RemoteDevice {
-  deviceId: string
-  name: string
-  platform: string
-  online: boolean
-  clientVersion?: string
-  harnessVersion?: string
-}
-
-interface RemoteDirectoryEntry {
-  name: string
-  path: string
-  hidden: boolean
-}
-
-export interface RemoteDirectoryListing {
-  path: string
-  home: string
-  crumbs: RemoteDirectoryEntry[]
-  entries: RemoteDirectoryEntry[]
-  truncated: boolean
-}
-
-export interface RemoteWorkspaceView {
-  workspaceId: string
-  path: string
-  title: string
-}
-
-export interface CodexWorkspaceView extends RemoteWorkspaceView {
-  sessionCount: number
-}
-
-export interface CursorWorkspaceView extends RemoteWorkspaceView {
-  sessionCount: number
-}
-
-export interface RemoteWorkspaceSelection {
-  targetDeviceId: string
-  workspaceId: string
-  backend?: 'harness' | 'codex' | 'cursor' | 'antigravity' | 'pi' | 'opencode' | 'claude' | 'hermes'
-  sessionId?: string
-}
-
-export interface WorkspacesClientServiceLike {
-  list: {
-    getSnapshot(): {
-      items: ReadonlyArray<{ workspaceId: string }>
-      baselinesReady?: boolean
-      phase?: string
-    }
-    subscribe(listener: () => void): () => void
-  }
-  connectWorkspace(workspaceId: string): Promise<string>
-  /** Harness 0.2 owns the main Session retain/release lifecycle here. */
-  openSession?(sessionId: string): void
-}
-
-export interface SessionsClientServiceLike {
-  list: {
-    getSnapshot(): { ids: ReadonlyArray<string>; phase: string }
-    subscribe(listener: () => void): () => void
-  }
-  refresh?(): Promise<void>
-  open?(sessionId: string): void
-  retain?(target: string, options: { source: string }): { sessionId: string; ready?: Promise<unknown>; release(): void }
-}
-
-export interface UiWorkspaceClientServiceLike {
-  connectWorkspace(workspaceId: string): Promise<string>
-  openSession(sessionId: string): void
-}
-
-interface PluginSettings {
-  enabled?: boolean
-  role?: 'host' | 'client' | 'both'
-  serverUrl?: string
-  terminal?: { enabled?: boolean }
-  hostControl?: { enabled?: boolean }
-  loopback?: { ports?: number[] }
-  tailnet?: { enabled?: boolean; dataDirectory?: string; servePort?: number }
-  remoteTools?: { enabled?: boolean }
-  forceRelay?: boolean
-  logLevel?: 'debug' | 'info' | 'warn' | 'error'
-  reconnect?: boolean | {
-    enabled?: boolean
-    initialDelayMs?: number
-    maxDelayMs?: number
-    jitter?: number
-  }
-  codex?: {
-    enabled?: boolean
-    binary?: string
-  }
-  sidebar?: { entry?: SidebarEntryStyle }
+  tailnet?: TailnetView | null
+  host?: RemoteHostStatus
 }
 
 /**
@@ -261,38 +99,24 @@ export interface SidebarEntryPreference {
 /** `ReactDOM.createPortal`, resolved once by the ModuleLoader factory. */
 export type PortalRenderer = (children: unknown, container: Element) => unknown
 
+/** The plugin's editable profile config, as read by the settings page. */
+export interface PluginSettings {
+  enabled?: boolean
+  logLevel?: 'debug' | 'info' | 'warn' | 'error'
+  terminal?: { enabled?: boolean }
+  sidebar?: { entry?: SidebarEntryStyle }
+  hostControl?: { enabled?: boolean }
+  tailnet?: { enabled?: boolean; dataDirectory?: string; servePort?: number }
+}
+
 export interface PluginSettingsView {
   config: PluginSettings
   deviceName: string
   writable: boolean
-  applies: 'live' | 'restart'
-  association?: PluginAssociation
-  associations?: Partial<Record<'host' | 'client', PluginAssociation>>
   startupError?: {
     code: string
     message: string
   }
-}
-
-export interface PluginAssociation {
-  method: 'account' | 'host_registration_code' | 'owned_device' | 'device_pairing'
-  account?: string
-}
-
-export interface PluginConfigureResult {
-  status: 'authorized'
-  role: 'host' | 'client'
-  account?: string
-  settings: PluginSettingsView
-}
-
-export interface RemoteConnectionProgress {
-  label: LocaleKey
-  detail: LocaleKey
-  percent: number
-  transports?: RemoteTransportPreference[]
-  activeTransports?: RemoteTransportPreference[]
-  routeVerb?: 'trying' | 'using'
 }
 
 /** React is supplied by Harness ModuleLoader, never bundled as a second runtime. */

@@ -13,28 +13,44 @@ vi.mock('node:fs/promises', async importOriginal => {
 
 const directories: string[] = []
 
+// Windows only permits file symlinks with SeCreateSymbolicLinkPrivilege
+// (Developer Mode or an elevated token). Probe it once instead of asserting on
+// an operation the host refuses to perform.
+const symlinksSupported = await canCreateSymlink()
+
+async function canCreateSymlink(): Promise<boolean> {
+  const directory = await mkdtemp(join(tmpdir(), 'dsh-symlink-probe-'))
+  try {
+    await writeFile(join(directory, 'target'), '')
+    await symlink(join(directory, 'target'), join(directory, 'link'), 'file')
+    return true
+  } catch {
+    return false
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+}
+
 afterEach(async () => {
   await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })))
 })
 
 describe('IdentityStore', () => {
-  it('moves all Server roles without changing identities, trust or credential bytes, and serializes repeated migration', async () => {
+  it('moves the Host storage of every Server without changing identity, trust or credential bytes, and serializes repeated migration', async () => {
     const home = await temporaryDirectory()
     const env = { DSH_HOME: home }
     const source = join(home, 'remote')
     const target = join(home, 'dsh-remote-over-tailnet')
     const records: Array<{ directory: string; identity: Awaited<ReturnType<IdentityStore['loadOrCreate']>>; peers: unknown; files: Map<string, Buffer> }> = []
     for (const origin of ['https://first.example.com', 'https://second.example.com']) {
-      for (const role of ['host', 'client'] as const) {
-        const directory = serverStorageDirectory(source, origin, role)
-        const store = new IdentityStore({ directory })
-        const identity = await store.loadOrCreate('Host')
-        await store.trustPeer({ deviceId: identity.deviceId, name: 'Peer', platform: 'linux', publicKey: identity.publicKey })
-        await new ServerCredentialStore(directory).save({ serverUrl: origin, deviceId: identity.deviceId, authorizationMethod: 'owned_device', accessToken: 'fixture-access-token', accessTokenExpiresAt: 1, refreshToken: 'fixture-refresh-token', refreshTokenExpiresAt: 2 })
-        const files = new Map<string, Buffer>()
-        for (const file of await readdir(directory)) files.set(file, await readFile(join(directory, file)))
-        records.push({ directory, identity, peers: store.listTrustedPeers(), files })
-      }
+      const directory = serverStorageDirectory(source, origin)
+      const store = new IdentityStore({ directory })
+      const identity = await store.loadOrCreate('Host')
+      await store.trustPeer({ deviceId: identity.deviceId, name: 'Peer', platform: 'linux', publicKey: identity.publicKey })
+      await new ServerCredentialStore(directory).save({ serverUrl: origin, deviceId: identity.deviceId, authorizationMethod: 'account', account: 'host@example.com', accessToken: 'fixture-access-token', accessTokenExpiresAt: 1, refreshToken: 'fixture-refresh-token', refreshTokenExpiresAt: 2 })
+      const files = new Map<string, Buffer>()
+      for (const file of await readdir(directory)) files.set(file, await readFile(join(directory, file)))
+      records.push({ directory, identity, peers: store.listTrustedPeers(), files })
     }
     await expect(stat(target)).rejects.toMatchObject({ code: 'ENOENT' })
     expect(await Promise.all(Array.from({ length: 3 }, () => prepareDefaultIdentityDirectory({ env })))).toEqual([target, target, target])
@@ -52,7 +68,9 @@ describe('IdentityStore', () => {
   })
 
   it('refuses conflicting roots, lock records and symlinks without modifying either storage tree', async () => {
-    for (const scenario of ['conflict', 'destination-race', 'identity-lock', 'refresh-lock', 'symlink']) {
+    const scenarios = ['conflict', 'destination-race', 'identity-lock', 'refresh-lock']
+    if (symlinksSupported) scenarios.push('symlink')
+    for (const scenario of scenarios) {
       const home = await temporaryDirectory()
       const source = join(home, 'remote')
       const target = join(home, 'dsh-remote-over-tailnet')
@@ -81,7 +99,7 @@ describe('IdentityStore', () => {
       const store = new IdentityStore({ directory: source })
       const original = await store.loadOrCreate('Host')
       await store.trustPeer({ deviceId: original.deviceId, name: 'Peer', platform: 'linux', publicKey: original.publicKey })
-      const credentials = await new ServerCredentialStore(source).save({ serverUrl: 'https://first.example.com', deviceId: original.deviceId, authorizationMethod: 'owned_device', accessToken: 'fixture-access-token', accessTokenExpiresAt: 1, refreshToken: 'fixture-refresh-token', refreshTokenExpiresAt: 2 })
+      const credentials = await new ServerCredentialStore(source).save({ serverUrl: 'https://first.example.com', deviceId: original.deviceId, authorizationMethod: 'account', account: 'host@example.com', accessToken: 'fixture-access-token', accessTokenExpiresAt: 1, refreshToken: 'fixture-refresh-token', refreshTokenExpiresAt: 2 })
       const bytes = await readFile(join(source, 'server-credentials.json'))
       vi.mocked(rename).mockRejectedValueOnce(Object.assign(new Error('move unavailable'), { code }))
       expect(await prepareDefaultIdentityDirectory({ env }), code).toBe(source)
@@ -127,7 +145,7 @@ describe('IdentityStore', () => {
   })
 
   it('leaves foreign, mixed and inconsistent legacy contents untouched instead of claiming ownership', async () => {
-    for (const scenario of ['foreign', 'empty', 'mixed', 'wrong-key', 'bad-peers', 'wrong-device', 'wrong-scope', 'unknown-role']) {
+    for (const scenario of ['foreign', 'empty', 'mixed', 'wrong-key', 'bad-peers', 'wrong-device', 'wrong-scope', 'unknown-role', 'client-role']) {
       const home = await temporaryDirectory()
       const source = join(home, 'remote')
       await mkdir(source)
@@ -139,13 +157,15 @@ describe('IdentityStore', () => {
           ? join(source, 'servers', '0'.repeat(24), 'host')
           : scenario === 'unknown-role'
             ? join(source, 'servers', '0'.repeat(24), 'other')
-            : serverStorageDirectory(source, origin, 'host')
+            : scenario === 'client-role'
+              ? join(source, 'servers', '0'.repeat(24), 'client')
+              : serverStorageDirectory(source, origin)
         const identity = await new IdentityStore({ directory }).loadOrCreate('Host')
         if (scenario === 'mixed') await writeFile(join(directory, 'foreign.txt'), 'leave-this-alone')
         if (scenario === 'wrong-key') await writeFile(join(directory, 'device.key'), 'invalid-private-key')
         if (scenario === 'bad-peers') await writeFile(join(directory, 'trusted-peers.json'), '{"schemaVersion":1,"peers":[{}]}')
         if (scenario === 'wrong-device' || scenario === 'wrong-scope') {
-          await new ServerCredentialStore(directory).save({ serverUrl: origin, deviceId: scenario === 'wrong-device' ? 'another-device' : identity.deviceId, authorizationMethod: 'owned_device', accessToken: 'fixture-access-token', accessTokenExpiresAt: 1, refreshToken: 'fixture-refresh-token', refreshTokenExpiresAt: 2 })
+          await new ServerCredentialStore(directory).save({ serverUrl: origin, deviceId: scenario === 'wrong-device' ? 'another-device' : identity.deviceId, authorizationMethod: 'account', account: 'host@example.com', accessToken: 'fixture-access-token', accessTokenExpiresAt: 1, refreshToken: 'fixture-refresh-token', refreshTokenExpiresAt: 2 })
         }
       }
       const snapshot = async (directory: string): Promise<unknown> => {
@@ -186,27 +206,32 @@ describe('IdentityStore', () => {
     expect(hostStore.isTrusted(client.deviceId, client.publicKey)).toBe(true)
   })
 
-  it('reloads all trusted peers after discovering more than 256 hosts', async () => {
+  it('reloads all trusted peers after discovering more than 256 devices', async () => {
     const directory = await temporaryDirectory()
     const store = new IdentityStore({ directory })
-    const identity = await store.loadOrCreate('Client')
+    const identity = await store.loadOrCreate('Host')
     for (let index = 0; index < 301; index++) {
-      await store.trustPeer({ deviceId: `host-${index}`, name: `Host ${index}`, platform: 'linux', publicKey: identity.publicKey })
+      await store.trustPeer({ deviceId: `peer-${index}`, name: `Peer ${index}`, platform: 'linux', publicKey: identity.publicKey })
     }
     const restarted = new IdentityStore({ directory })
-    await expect(restarted.loadOrCreate('Client')).resolves.toMatchObject({ deviceId: identity.deviceId })
+    await expect(restarted.loadOrCreate('Host')).resolves.toMatchObject({ deviceId: identity.deviceId })
     expect(restarted.listTrustedPeers()).toEqual(store.listTrustedPeers())
     const file = join(directory, 'trusted-peers.json')
     const records = JSON.parse(await readFile(file, 'utf8'))
     records.peers[300].fingerprint = 'invalid'
     await writeFile(file, JSON.stringify(records), { mode: 0o600 })
-    await expect(new IdentityStore({ directory }).loadOrCreate('Client')).rejects.toThrow(/invalid fingerprint/)
+    await expect(new IdentityStore({ directory }).loadOrCreate('Host')).rejects.toThrow(/invalid fingerprint/)
   })
 
   it('fails closed for incomplete or overly permissive identity files', async () => {
     const incomplete = await temporaryDirectory()
     await writeFile(join(incomplete, 'device.json'), '{}')
     await expect(new IdentityStore({ directory: incomplete }).loadOrCreate('Host')).rejects.toBeInstanceOf(IdentityInvalidError)
+
+    const deviceOnly = await temporaryDirectory()
+    await new IdentityStore({ directory: await temporaryDirectory() }).loadOrCreate('Other')
+    await writeFile(join(deviceOnly, 'device.json'), JSON.stringify({ schemaVersion: 1, deviceId: '0190a000-0000-7000-8000-000000000000', name: 'Host', publicKey: 'x' }))
+    await expect(new IdentityStore({ directory: deviceOnly }).loadOrCreate('Host')).rejects.toThrow(/incomplete/)
 
     if (process.platform !== 'win32') {
       const permissive = await temporaryDirectory()
@@ -216,14 +241,14 @@ describe('IdentityStore', () => {
     }
   })
 
-  it('isolates Host and Client identities by normalized Server origin', async () => {
+  it('derives one Host storage directory per normalized Server origin', async () => {
     const root = await temporaryDirectory()
-    const firstHost = serverStorageDirectory(root, 'https://one.example.com', 'host')
-    const firstClient = serverStorageDirectory(root, 'https://one.example.com', 'client')
-    const secondHost = serverStorageDirectory(root, 'https://two.example.com', 'host')
-    expect(firstHost).not.toBe(firstClient)
-    expect(firstHost).not.toBe(secondHost)
-    expect(serverStorageDirectory(root, 'https://one.example.com/', 'host')).toBe(firstHost)
+    const first = serverStorageDirectory(root, 'https://one.example.com')
+    const second = serverStorageDirectory(root, 'https://two.example.com')
+    expect(first).not.toBe(second)
+    expect(first).toBe(join(root, 'servers', first.split(/[\\/]/).at(-2)!, 'host'))
+    expect(serverStorageDirectory(root, 'https://one.example.com/')).toBe(first)
+    expect(serverStorageDirectory(root, 'https://ONE.example.com')).toBe(first)
   })
 
   it('serializes concurrent first-time creation onto one key pair', async () => {
@@ -296,97 +321,11 @@ describe('IdentityStore', () => {
     expect(remaining).toEqual([])
   })
 
-  it('self-heals uncredentialed unpeered corrupt or incomplete client identities including across legacy migration', async () => {
-    const first = await new IdentityStore({ directory: await temporaryDirectory() }).loadOrCreate('Client 1')
-    const second = await new IdentityStore({ directory: await temporaryDirectory() }).loadOrCreate('Client 2')
-
-    for (const scenario of ['mismatched', 'device-only', 'key-only', 'legacy-upgrade', 'legacy-client-only'] as const) {
-      if (scenario === 'legacy-client-only') {
-        const home = await temporaryDirectory()
-        const legacyRoot = join(home, 'remote')
-        const serverUrl = 'https://relay.example.test'
-        const legacyClientDir = serverStorageDirectory(legacyRoot, serverUrl, 'client')
-        await mkdir(legacyClientDir, { recursive: true })
-        await writeFile(join(legacyClientDir, 'device.json'), JSON.stringify({
-          schemaVersion: 1,
-          deviceId: first.deviceId,
-          name: 'Client',
-          publicKey: first.publicKey,
-        }), { mode: 0o600 })
-        await writeFile(join(legacyClientDir, 'device.key'), `${second.privateKey}\n`, { mode: 0o600 })
-
-        const migratedRoot = await prepareDefaultIdentityDirectory({ env: { DSH_HOME: home } })
-        expect(migratedRoot).toBe(join(home, 'dsh-remote-over-tailnet'))
-        const migratedClientDir = serverStorageDirectory(migratedRoot, serverUrl, 'client')
-        const healedClient = await new IdentityStore({ directory: migratedClientDir, role: 'client' }).loadOrCreate('Client')
-        expect(healedClient.deviceId).not.toBe(first.deviceId)
-        expect(await new IdentityStore({ directory: migratedClientDir, role: 'client' }).loadOrCreate('Client')).toEqual(healedClient)
-        continue
-      }
-      if (scenario === 'legacy-upgrade') {
-        const home = await temporaryDirectory()
-        const legacyRoot = join(home, 'remote')
-        const serverUrl = 'https://relay.example.test'
-        const legacyHostDir = serverStorageDirectory(legacyRoot, serverUrl, 'host')
-        const legacyClientDir = serverStorageDirectory(legacyRoot, serverUrl, 'client')
-        const hostIdentity = await new IdentityStore({ directory: legacyHostDir, role: 'host' }).loadOrCreate('Host')
-        await new ServerCredentialStore(legacyHostDir).save({
-          serverUrl,
-          deviceId: hostIdentity.deviceId,
-          authorizationMethod: 'account',
-          account: 'host@example.com',
-          accessToken: 'fixture-access-token',
-          accessTokenExpiresAt: 1,
-          refreshToken: 'fixture-refresh-token',
-          refreshTokenExpiresAt: 2,
-        })
-        const hostCredentialBytes = await readFile(join(legacyHostDir, 'server-credentials.json'))
-        await mkdir(legacyClientDir, { recursive: true })
-        await writeFile(join(legacyClientDir, 'device.json'), JSON.stringify({
-          schemaVersion: 1,
-          deviceId: first.deviceId,
-          name: 'Client',
-          publicKey: first.publicKey,
-        }), { mode: 0o600 })
-        await writeFile(join(legacyClientDir, 'device.key'), `${second.privateKey}\n`, { mode: 0o600 })
-
-        const migratedRoot = await prepareDefaultIdentityDirectory({ env: { DSH_HOME: home } })
-        expect(migratedRoot).toBe(join(home, 'dsh-remote-over-tailnet'))
-        const migratedHostDir = serverStorageDirectory(migratedRoot, serverUrl, 'host')
-        const migratedClientDir = serverStorageDirectory(migratedRoot, serverUrl, 'client')
-        expect(await new IdentityStore({ directory: migratedHostDir, role: 'host' }).loadOrCreate('Host')).toEqual(hostIdentity)
-        expect(await readFile(join(migratedHostDir, 'server-credentials.json'))).toEqual(hostCredentialBytes)
-        const healedClient = await new IdentityStore({ directory: migratedClientDir, role: 'client' }).loadOrCreate('Client')
-        expect(healedClient.deviceId).not.toBe(first.deviceId)
-        expect(await new IdentityStore({ directory: migratedClientDir, role: 'client' }).loadOrCreate('Client')).toEqual(healedClient)
-        continue
-      }
-
-      const directory = await temporaryDirectory()
-      if (scenario !== 'key-only') {
-        await writeFile(join(directory, 'device.json'), JSON.stringify({
-          schemaVersion: 1,
-          deviceId: first.deviceId,
-          name: 'Client',
-          publicKey: first.publicKey,
-        }))
-      }
-      if (scenario !== 'device-only') {
-        await writeFile(join(directory, 'device.key'), `${second.privateKey}\n`)
-      }
-      const healed = await new IdentityStore({ directory, role: 'client' }).loadOrCreate('Client')
-      expect(healed.publicKey, scenario).toBeDefined()
-      expect(healed.privateKey, scenario).toBeDefined()
-      const reloaded = await new IdentityStore({ directory, role: 'client' }).loadOrCreate('Client')
-      expect(reloaded, scenario).toEqual(healed)
-    }
-  })
-
-  it('refuses to auto-heal when credentials, trusted peers, unreadable peer records, or host role exist without altering stored bytes', async () => {
+  it('fails closed without touching stored bytes when credentials or peers sit beside a mismatched pair', async () => {
     const first = await new IdentityStore({ directory: await temporaryDirectory() }).loadOrCreate('Device 1')
     const second = await new IdentityStore({ directory: await temporaryDirectory() }).loadOrCreate('Device 2')
 
-    for (const scenario of ['credentials', 'trusted-peers', 'corrupt-peers', 'unknown-file', 'host-role'] as const) {
+    for (const scenario of ['credentials', 'trusted-peers', 'corrupt-peers', 'unknown-file'] as const) {
       const directory = await temporaryDirectory()
       await writeFile(join(directory, 'device.json'), JSON.stringify({
         schemaVersion: 1,
@@ -399,7 +338,8 @@ describe('IdentityStore', () => {
         await new ServerCredentialStore(directory).save({
           serverUrl: 'https://relay.example.test',
           deviceId: first.deviceId,
-          authorizationMethod: 'owned_device',
+          authorizationMethod: 'account',
+          account: 'host@example.com',
           accessToken: 'token-access-12345',
           accessTokenExpiresAt: Date.now() + 60000,
           refreshToken: 'token-refresh-12345',
@@ -431,8 +371,7 @@ describe('IdentityStore', () => {
         beforeEntries.map(async name => [name, await readFile(join(directory, name))] as const),
       ))
 
-      const role = scenario === 'host-role' ? 'host' : 'client'
-      await expect(new IdentityStore({ directory, role }).loadOrCreate('Device'), scenario)
+      await expect(new IdentityStore({ directory }).loadOrCreate('Device'), scenario)
         .rejects.toThrow(IdentityInvalidError)
 
       const afterEntries = (await readdir(directory)).sort()

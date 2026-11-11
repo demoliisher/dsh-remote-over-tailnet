@@ -7,10 +7,7 @@ const credentialSchema = z.object({
   schemaVersion: z.literal(1),
   serverUrl: z.string().url(),
   deviceId: z.string().min(1),
-  authorizationMethod: z.enum(['account', 'host_registration_code', 'owned_device', 'device_pairing']),
-  accountKind: z.enum(['standard', 'device_only']).optional(),
-  pairingRestricted: z.boolean().optional(),
-  inboundOnly: z.boolean().optional(),
+  authorizationMethod: z.literal('account'),
   account: z.string().min(1).max(254).optional(),
   accessToken: z.string().min(16),
   accessTokenExpiresAt: z.number().int().positive(),
@@ -48,17 +45,6 @@ export class ServerCredentialStore {
     } finally {
       await rm(lock, { recursive: true })
     }
-  }
-
-  async pairingHostOnly(): Promise<boolean> {
-    const policy = await readPrivateJson(join(dirname(this.path), 'pairing-host-only.json'))
-    if (policy === undefined) return false
-    z.object({ hostOnly: z.literal(true) }).strict().parse(policy)
-    return true
-  }
-
-  async restrictPairingHostOnly(): Promise<void> {
-    await atomicWritePrivate(join(dirname(this.path), 'pairing-host-only.json'), '{"hostOnly":true}')
   }
 
   async load(serverUrl: string, deviceId: string): Promise<ServerCredentials | undefined> {

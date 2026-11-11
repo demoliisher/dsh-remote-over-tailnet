@@ -215,13 +215,6 @@ export class HostServerConnection {
               ? 'Credential refresh is locked. Stop other instances; after a crash, stop all instances before removing server-credentials.json.refresh-lock and authorizing again.'
               : 'Host authorization failed. Authorize this Host again from a Remote client or in Remote settings.')
         }
-        if (code === 'DEVICE_REVOKED') {
-          try {
-            await this.api.clearAuthorization()
-          } catch (clearError) {
-            this.logger.error('failed to clear revoked Host authorization', { code: errorCode(clearError) })
-          }
-        }
         if (TERMINAL_AUTH_ERRORS.has(code) || code === 'UNSUPPORTED_VERSION') { await this.dropTunnels(); return }
         if (!this.config.reconnect.enabled) return
       }

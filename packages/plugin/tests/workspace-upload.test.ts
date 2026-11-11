@@ -186,7 +186,7 @@ describe('workspace-root upload authority and lifecycle', () => {
     const { host } = await setup()
     const logger = { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() }
     const router = new RpcRouter(undefined, logger as unknown as SafeLogger,
-      undefined, undefined, () => ['workspace.upload.v1'], undefined, undefined, undefined, undefined, undefined, host)
+      undefined, undefined, () => ['workspace.upload.v1'], undefined, undefined, undefined, undefined, host)
     for (const method of ['workspace.upload.open', 'workspace.upload.chunk', 'workspace.upload.commit', 'workspace.upload.abort'] as const) {
       const response = await router.handle(createRpcRequest(method, { ...request(), endpoint: '/private/uploaded-secret.txt' }))
       expect(response).toMatchObject({ type: 'rpc.error', payload: { code: 'INVALID_MESSAGE' } })
@@ -197,7 +197,7 @@ describe('workspace-root upload authority and lifecycle', () => {
   it('routes upload RPCs through the encrypted business router and cleans them on peer close', async () => {
     const { root, host } = await setup()
     const router = new RpcRouter(undefined, undefined, undefined, undefined, () => ['workspace.upload.v1'],
-      undefined, undefined, undefined, undefined, undefined, host)
+      undefined, undefined, undefined, undefined, host)
     const p = request()
     expect(await router.handle(createRpcRequest('workspace.upload.open', p))).toMatchObject({ type: 'rpc.response', payload: { result: { uploadId: p.uploadId } } })
     await router.closePeerStreams()

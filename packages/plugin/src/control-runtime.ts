@@ -1,44 +1,26 @@
 import { hostname } from 'node:os'
-import { existsSync } from 'node:fs'
 import type { ControlResult } from './control-result.js'
 import { resolveConfig, type Config, type ConfigInput, type ResolvedConfig } from './config.js'
-import {
-  ClientModeError,
-  type ClientModeRuntime,
-  type HostConnectionHandle,
-  type HostAuthorizationControl,
-} from './client-runtime.js'
-import {
-  IdentityInvalidError,
-  IdentityStore,
-  resetDefaultIdentityRoles,
-  serverStorageDirectory,
-  type RemoteDeviceRole,
-} from './identity-store.js'
 import { safeStartupError } from './safe-error.js'
-import { ClientServerApi, HostServerApi } from './server-api.js'
-import { ServerCredentialStore, ServerCredentialsInvalidError } from './server-credentials.js'
-import { registerControlRoute, type HostWebServerLike } from './control-route.js'
+import type { HostRemoteStatus } from './service.js'
+import {
+  registerControlRoute,
+  type ControlRouteHandler,
+  type HostConnectionHandleLike,
+  type HostWebServerLike,
+} from './control-route.js'
 import { ControlStatusStream } from './control-stream.js'
-import type { PluginUpdateSnapshot } from './update-check.js'
 import type { TailnetControl } from './tailnet/orchestrator.js'
 
+/** 插件设置页读取的配置视图。 */
 export interface PluginSettingsView {
   config: Config
   deviceName: string
   writable: boolean
-  applies: 'live' | 'restart'
-  association?: PluginAssociation
-  associations: Partial<Record<'host' | 'client', PluginAssociation>>
   startupError?: {
     code: string
     message: string
   }
-}
-
-export interface PluginAssociation {
-  method: 'account' | 'host_registration_code' | 'owned_device' | 'device_pairing'
-  account?: string
 }
 
 /**
@@ -57,50 +39,46 @@ export interface PluginSettingsBinding {
   replace(section: Config): Promise<void>
 }
 
-/** Loopback-only control plane shared by Local/Remote switching and plugin setup. */
-export class PluginControlRuntime {
-  private logoutFlight?: Promise<PluginSettingsView>
-  private serverSwitchFlight?: Promise<PluginSettingsView>
-  private startupFailure?: unknown
-  private storageAvailable = true
+/** Host 运行时暴露给控制面的最小接口。 */
+export interface HostControl {
+  hostStatus(): HostRemoteStatus
+  authorizeHostWithAccount(email: string, password: string): Promise<unknown>
+  reconnectHost(): void
+  setHostControl(enabled: boolean): Promise<void>
+  setTerminalEnabled?(enabled: boolean): void
+  setLoopbackPorts?(ports: readonly number[]): void
+}
 
-  setStartupFailure(error: unknown, options?: { storageAvailable?: boolean }): void {
+/** 控制面返回给界面的业务错误，保留便于界面判断的错误码。 */
+export class ControlError extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message)
+    this.name = 'ControlError'
+  }
+}
+
+/** Loopback-only control plane used by the settings page and the workbench. */
+export class PluginControlRuntime {
+  private startupFailure?: unknown
+
+  setStartupFailure(error: unknown): void {
     this.startupFailure = error
-    if (options?.storageAvailable !== undefined) {
-      this.storageAvailable = options.storageAvailable
-    }
-    this.client = undefined
     this.host = undefined
   }
 
   clearStartupFailure(): void {
     this.startupFailure = undefined
-    this.storageAvailable = true
-  }
-
-  setIdentityDirectory(directory: string): void {
-    this.identityDirectory = directory
-    this.storageAvailable = true
   }
 
   constructor(
     private config: ResolvedConfig,
-    private identityDirectory: string,
     private readonly settings: PluginSettingsBinding | undefined,
-    private client: ClientModeRuntime | undefined,
-    private host: HostAuthorizationControl | undefined,
-    private readonly switchServer?: (config: ResolvedConfig) => Promise<{
-      client: ClientModeRuntime | undefined
-      host: HostAuthorizationControl
-    }>,
-    /** Update-check snapshots merged into every `status` result; absent when the plugin is disabled. */
-    private readonly updates?: { snapshot(): PluginUpdateSnapshot | undefined },
-    private readonly useDefaultStorage = false,
+    private host: HostControl | undefined,
     /** 阶段一的本地中继与 Tailscale 组网编排；未启用时为 undefined。 */
     private readonly tailnet?: TailnetControl,
   ) {}
 
-  register(connection: HostConnectionHandle, webServer?: HostWebServerLike): () => Promise<void> {
+  register(connection: HostConnectionHandleLike, webServer?: HostWebServerLike): () => Promise<void> {
     const statusStream = new ControlStatusStream(() => this.streamStatus())
     return registerControlRoute(
       connection,
@@ -117,464 +95,147 @@ export class PluginControlRuntime {
    */
   private async streamStatus(): Promise<unknown> {
     const result = await this.handle('status', {}, new AbortController().signal)
-    if (!result.ok) throw new ClientModeError('STATUS_UNAVAILABLE', result.error.message)
+    if (!result.ok) throw new ControlError('STATUS_UNAVAILABLE', result.error.message)
     return result.value
   }
 
-  private async handle(endpoint: string, payload: unknown, signal: AbortSignal): Promise<ControlResult<unknown>> {
+  private async handle(endpoint: string, payload: unknown, _signal: AbortSignal): Promise<ControlResult<unknown>> {
     try {
-      // A request arriving during replacement must use the new Server runtime.
-      if (endpoint !== 'settings.server.set' && endpoint !== 'settings.identity.reset') await this.serverSwitchFlight
-      if (endpoint.startsWith('host.pairing.')) {
-        if (this.host?.pairingControl === undefined) throw new ClientModeError('METHOD_NOT_ALLOWED', 'Host device pairing is unavailable.')
-        const action = endpoint.slice('host.pairing.'.length)
-        if (action !== 'start' && action !== 'status' && action !== 'confirm' && action !== 'cancel') throw new ClientModeError('METHOD_NOT_ALLOWED', 'Unknown pairing action.')
-        const input = record(payload)
-        if (Object.keys(input).some(key => key !== 'sessionId' && key !== 'verificationCode')
-          || input.sessionId !== undefined && typeof input.sessionId !== 'string'
-          || input.verificationCode !== undefined && typeof input.verificationCode !== 'string') throw new ClientModeError('INVALID_MESSAGE', 'Invalid pairing request.')
-        if (action === 'start') await this.client?.handleControl('mode.set', { mode: 'local' }, signal)
-        const view = await this.host.pairingControl(action, input as { sessionId?: string; verificationCode?: string })
-        if (view?.localSaved && this.host.hostStatus().pairingHostOnly) await this.client?.handleControl('mode.set', { mode: 'local' }, signal)
-        return ok(view)
-      }
       if (endpoint === 'settings.development.set') return ok(await this.setDevelopment(payload))
       if (endpoint === 'settings.appearance.set') return ok(await this.setAppearance(payload))
-      if (endpoint === 'settings.get') return ok(await this.settingsView())
-      if (endpoint === 'settings.configure') return ok(await this.configure(payload))
-      if (endpoint === 'settings.server.set') return ok(await this.setServer(payload))
-      if (endpoint === 'settings.role.set') return ok(await this.setRole(payload))
-      if (endpoint === 'settings.codex.set') return ok(await this.setCodex(payload))
-      if (endpoint === 'settings.logout') return ok(await this.logout())
-      if (endpoint === 'client.logout') return ok(await this.logoutClient())
-      if (endpoint === 'settings.identity.reset') return ok(await this.resetIdentity(payload))
-      if (endpoint === 'host.authorization.set' && this.client !== undefined) {
-        const value = record(payload)
-        if (typeof value.enabled !== 'boolean') throw new ClientModeError('INVALID_MESSAGE', 'Host authorization state is required.')
-        const status = await this.client.setHostAuthorization(value.enabled)
-        if (this.settings !== undefined) {
-          const current = resolveConfig(this.settings.get())
-          await this.settings.replace(editableConfig({ ...current, hostControl: { enabled: value.enabled } }))
-        }
-        return ok(status)
-      }
+      if (endpoint === 'settings.get') return ok(this.settingsView())
+      if (endpoint === 'host.authorization.set') return ok(await this.setHostControl(payload))
       if (endpoint === 'host.reconnect') {
-        if (this.host === undefined) throw new ClientModeError('METHOD_NOT_ALLOWED', 'This plugin is not running as a Host.')
+        if (this.host === undefined) throw new ControlError('METHOD_NOT_ALLOWED', '插件当前没有运行 Host。')
         this.host.reconnectHost()
-        return withUpdate(ok(this.hostOnlyStatus()), this.updates?.snapshot())
+        return ok(this.hostOnlyStatus())
       }
       if (endpoint === 'tailnet.status') return ok(this.tailnet?.snapshot() ?? null)
-      if (endpoint === 'tailnet.credentials') {
-        if (this.tailnet === undefined) throw new ClientModeError('METHOD_NOT_ALLOWED', 'Tailscale 组网未启用。')
-        const credentials = this.tailnet.credentials()
-        if (credentials === undefined) throw new ClientModeError('CREDENTIALS_UNAVAILABLE', '中继账号尚未生成，请等待 Tailscale 与中继就绪。')
-        return ok(credentials)
-      }
-      if (endpoint === 'tailnet.credentials.update') {
-        if (this.tailnet === undefined) throw new ClientModeError('METHOD_NOT_ALLOWED', 'Tailscale 组网未启用。')
-        const value = record(payload)
-        if (typeof value.account !== 'string' || value.account.trim() === '' || typeof value.password !== 'string' || value.password === '') {
-          throw new ClientModeError('INVALID_MESSAGE', '中继邮箱与密码不能为空。')
-        }
-        const credentials = { account: value.account.trim(), password: value.password }
-        const snapshot = await this.tailnet.updateCredentials(credentials)
-        if (this.host !== undefined) {
-          try {
-            await this.host.authorizeHostWithAccount(credentials.account, credentials.password)
-            this.tailnet.reportAuthorized()
-          } catch (error) {
-            this.tailnet.reportAuthorizeFailure(error)
-            throw error
-          }
-        }
-        return ok(snapshot ?? null)
-      }
+      if (endpoint === 'tailnet.credentials') return ok(this.credentials())
+      if (endpoint === 'tailnet.credentials.update') return ok(await this.updateCredentials(payload))
       if (endpoint === 'status') {
         if (this.startupFailure !== undefined) {
-          const startupError = safeStartupError(this.startupFailure)
-          const failureStatus: Record<string, unknown> = {
-            mode: 'local',
-            available: false,
-            controlUnavailable: false,
-            connected: false,
-            transport: 'Disconnected',
-            startupError,
+          return this.withTailnet(ok({
+            deviceName: hostname(),
+            startupError: safeStartupError(this.startupFailure),
             hostAuthorizationAvailable: false,
-          }
-          return withUpdate(this.withTailnet(ok(failureStatus)), this.updates?.snapshot())
+          }))
         }
-        // Both mode paths merge the update snapshot here, so the SSE stream,
-        // polling, and the unary call always observe the same payload shape.
-        const base = this.client !== undefined
-          ? await this.client.handleControl(endpoint, payload, signal)
-          : ok(this.hostOnlyStatus())
-        return withUpdate(this.withTailnet(base), this.updates?.snapshot())
+        return this.withTailnet(ok(this.hostOnlyStatus()))
       }
-      if (this.client !== undefined) return this.client.handleControl(endpoint, payload, signal)
-
-      if (endpoint === 'devices') return ok([])
-      if (endpoint === 'host.account.login') {
-        if (this.host === undefined) throw new ClientModeError('METHOD_NOT_ALLOWED', 'This plugin is not running as a Host.')
-        const value = record(payload)
-        if (typeof value.email !== 'string' || typeof value.password !== 'string') {
-          throw new ClientModeError('INVALID_MESSAGE', 'Email and password are required.')
-        }
-        return ok(await this.host.authorizeHostWithAccount(value.email, value.password))
-      }
-      if (endpoint === 'host.registration-code.submit') {
-        if (this.host === undefined) throw new ClientModeError('METHOD_NOT_ALLOWED', 'This plugin is not running as a Host.')
-        const value = record(payload)
-        if (typeof value.code !== 'string' || value.code.trim() === '') {
-          throw new ClientModeError('INVALID_MESSAGE', 'A Host registration code is required.')
-        }
-        return ok(await this.host.authorizeHostWithCode(value.code))
-      }
-      if (endpoint === 'mode.set' && record(payload).mode === 'local') {
-        return withUpdate(ok(this.hostOnlyStatus()), this.updates?.snapshot())
-      }
-      if (this.startupFailure instanceof Error) {
-        throw this.startupFailure
-      }
-      throw new ClientModeError('METHOD_NOT_ALLOWED', 'Remote Client mode is disabled by the plugin role.')
+      throw new ControlError('METHOD_NOT_ALLOWED', `Unknown control endpoint: ${endpoint}`)
     } catch (error) {
       return fail(error)
     }
   }
 
-  private async configure(payload: unknown): Promise<Record<string, unknown>> {
-    if (this.settings === undefined) {
-      throw new ClientModeError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
-    }
+  private credentials(): { account: string; password: string } {
+    if (this.tailnet === undefined) throw new ControlError('METHOD_NOT_ALLOWED', 'Tailscale 组网未启用。')
+    const credentials = this.tailnet.credentials()
+    if (credentials === undefined) throw new ControlError('CREDENTIALS_UNAVAILABLE', '中继账号尚未生成，请等待 Tailscale 与中继就绪。')
+    return credentials
+  }
+
+  /**
+   * 允许控制本机只切换 Host 控制连接：打开时确保中继上有 Host 授权并恢复连接，
+   * 关闭时断开连接但保留设备身份，重新打开无需再次授权。
+   */
+  private async setHostControl(payload: unknown): Promise<Record<string, unknown>> {
+    if (this.host === undefined) throw new ControlError('METHOD_NOT_ALLOWED', '插件当前没有运行 Host。')
     const value = record(payload)
-    if (value.role !== 'host' && value.role !== 'client') {
-      throw new ClientModeError('INVALID_MESSAGE', 'Role must be Host or Client.')
+    if (typeof value.enabled !== 'boolean') throw new ControlError('INVALID_MESSAGE', '需要提供允许控制本机的开关状态。')
+    await this.persistHostControl(value.enabled)
+    if (!value.enabled) {
+      await this.host.setHostControl(false)
+      return this.hostOnlyStatus()
     }
-    if (typeof value.serverUrl !== 'string') {
-      throw new ClientModeError('INVALID_MESSAGE', 'Server URL is required.')
-    }
-    const current = editableConfig(resolveConfig(this.settings.get()))
-    if (value.role === 'client' && this.host?.hostStatus?.()?.pairingHostOnly) throw new ClientModeError('DEVICE_SCOPE_REQUIRED', 'This Host only accepts incoming connections.')
-    const next = resolveConfig({ ...current, role: value.role, serverUrl: value.serverUrl })
-
-    if (!this.storageAvailable && this.startupFailure instanceof Error) {
-      throw this.startupFailure
-    }
-    const identities = new IdentityStore({
-      directory: serverStorageDirectory(this.identityDirectory, next.serverUrl!, value.role),
-      role: value.role,
-    })
-    let identity = await identities.loadOrCreate(hostname())
-    const api = value.role === 'host'
-      ? new HostServerApi(next.serverUrl!, new ServerCredentialStore(identities.directory))
-      : new ClientServerApi(next.serverUrl!, new ServerCredentialStore(identities.directory))
-    let authorization
-    if (value.role === 'host' && typeof value.registrationCode === 'string' && value.registrationCode.trim() !== '') {
-      authorization = await api.authorizeHostWithCode(identity, value.registrationCode)
-    } else {
-      if (typeof value.email !== 'string' || typeof value.password !== 'string') {
-        throw new ClientModeError('INVALID_MESSAGE', 'Email and password are required for account authorization.')
-      }
-      authorization = await api.authorizeWithAccount(identity, value.email, value.password, async () => {
-        identity = await identities.reset(hostname())
-        return identity
-      })
-    }
-    if (value.role === 'client' && resolveConfig(this.settings.get()).hostControl?.enabled !== false) {
-      await this.client?.authorizeHostByDefault()
-    }
-    await this.settings.replace(editableConfig(next))
-    return {
-      status: 'authorized',
-      role: value.role,
-      ...(authorization.account === undefined ? {} : { account: authorization.account }),
-      settings: await this.settingsView(),
-    }
-  }
-
-  private async setServer(payload: unknown): Promise<PluginSettingsView> {
-    if (this.serverSwitchFlight !== undefined) {
-      throw new ClientModeError('SERVER_SWITCH_BUSY', 'A Server switch is already in progress.')
-    }
-    const flight = this.applyServer(payload)
-    this.serverSwitchFlight = flight
-    try {
-      return await flight
-    } finally {
-      if (this.serverSwitchFlight === flight) this.serverSwitchFlight = undefined
-    }
-  }
-
-  private async applyServer(payload: unknown): Promise<PluginSettingsView> {
-    await this.logoutFlight
-    if (this.settings === undefined) {
-      throw new ClientModeError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
-    }
-    const value = record(payload)
-    if (typeof value.serverUrl !== 'string') {
-      throw new ClientModeError('INVALID_MESSAGE', 'Server URL is required.')
-    }
-    const current = editableConfig(resolveConfig(this.settings.get()))
-    const next = resolveConfig({ ...current, serverUrl: value.serverUrl })
-    await this.settings.replace(editableConfig(next))
-    if (this.switchServer !== undefined) {
-      if (next.serverUrl !== this.config.serverUrl || this.startupFailure !== undefined) {
-        try {
-          const runtimes = await this.switchServer(next)
-          this.client = runtimes.client
-          this.host = runtimes.host
-          this.clearStartupFailure()
-        } catch (error) {
-          this.config = next
-          this.setStartupFailure(error)
-          throw error
-        }
-      }
-      this.config = next
-      return { ...await this.settingsView(), applies: 'live' }
-    }
-    return this.settingsView()
-  }
-
-  private async resetIdentity(payload: unknown): Promise<PluginSettingsView> {
-    if (this.serverSwitchFlight !== undefined) {
-      throw new ClientModeError('SERVER_SWITCH_BUSY', 'A Server switch is already in progress.')
-    }
-    const flight = this.applyResetIdentity(payload)
-    this.serverSwitchFlight = flight
-    try {
-      return await flight
-    } finally {
-      if (this.serverSwitchFlight === flight) this.serverSwitchFlight = undefined
-    }
-  }
-
-  private async applyResetIdentity(payload: unknown): Promise<PluginSettingsView> {
-    await this.logoutFlight
-    const value = payload === undefined ? {} : record(payload)
-    const roleArg = value.role === undefined ? 'all' : value.role
-    if (roleArg !== 'host' && roleArg !== 'client' && roleArg !== 'all') {
-      throw new ClientModeError('INVALID_MESSAGE', 'Role must be host, client, or all.')
-    }
-    const roles: RemoteDeviceRole[] = roleArg === 'client' ? ['client'] : roleArg === 'host' ? ['host'] : ['host', 'client']
-    const config = this.settings === undefined ? this.config : resolveConfig(this.settings.get())
-    const nextDirectory = await resetDefaultIdentityRoles(
-      roles,
-      config.serverUrl,
-      hostname(),
-      this.useDefaultStorage ? {} : { directory: this.identityDirectory },
-    )
-    this.setIdentityDirectory(nextDirectory)
-    if (this.switchServer !== undefined) {
+    // 先确认中继授权再恢复连接：用过期凭据 resume 会先触发一轮失败重连。
+    if (this.tailnet !== undefined) {
+      const credentials = this.credentials()
       try {
-        const runtimes = await this.switchServer(config)
-        this.client = runtimes.client
-        this.host = runtimes.host
-        this.config = config
-        this.clearStartupFailure()
+        await this.host.authorizeHostWithAccount(credentials.account, credentials.password)
+        this.tailnet.reportAuthorized()
       } catch (error) {
-        this.setStartupFailure(error)
+        this.tailnet.reportAuthorizeFailure(error)
         throw error
       }
-      return { ...await this.settingsView(), applies: 'live' }
     }
-    this.clearStartupFailure()
-    return { ...await this.settingsView(), applies: 'live' }
+    await this.host.setHostControl(true)
+    return this.hostOnlyStatus()
   }
 
-  private async setRole(payload: unknown): Promise<PluginSettingsView> {
-    if (this.settings === undefined) {
-      throw new ClientModeError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
+  private async updateCredentials(payload: unknown): Promise<unknown> {
+    if (this.tailnet === undefined) throw new ControlError('METHOD_NOT_ALLOWED', 'Tailscale 组网未启用。')
+    const value = record(payload)
+    if (typeof value.account !== 'string' || value.account.trim() === '' || typeof value.password !== 'string' || value.password === '') {
+      throw new ControlError('INVALID_MESSAGE', '中继邮箱与密码不能为空。')
     }
-    const role = record(payload).role
-    if (role !== 'host' && role !== 'client') {
-      throw new ClientModeError('INVALID_MESSAGE', 'Role must be Host or Client.')
+    const credentials = { account: value.account.trim(), password: value.password }
+    const snapshot = await this.tailnet.updateCredentials(credentials)
+    if (this.host !== undefined) {
+      try {
+        await this.host.authorizeHostWithAccount(credentials.account, credentials.password)
+        this.tailnet.reportAuthorized()
+      } catch (error) {
+        this.tailnet.reportAuthorizeFailure(error)
+        throw error
+      }
     }
-    const current = editableConfig(resolveConfig(this.settings.get()))
-    const currentRole = current.role === 'client' ? 'client' : 'host'
-    if (role === 'client' && this.host?.hostStatus?.()?.pairingHostOnly) throw new ClientModeError('DEVICE_SCOPE_REQUIRED', 'This Host only accepts incoming Remote connections.')
-    if (role !== currentRole && current.serverUrl !== undefined
-      && await this.association(current.serverUrl, role) === undefined) {
-      await this.authorizeOwnedRole(current.serverUrl, currentRole, role)
-    }
-    await this.settings.replace({ ...current, role })
-    return this.settingsView()
+    return snapshot ?? null
+  }
+
+  private async persistHostControl(enabled: boolean): Promise<void> {
+    const current = resolveConfig(this.settings === undefined ? this.config : this.settings.get())
+    const next = resolveConfig({ ...editableConfig(current), hostControl: { enabled } })
+    this.config = next
+    if (this.settings !== undefined) await this.settings.replace(editableConfig(next))
   }
 
   private async setDevelopment(payload: unknown): Promise<PluginSettingsView> {
-    if (this.settings === undefined) throw new ClientModeError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
+    if (this.settings === undefined) throw new ControlError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
     const value = record(payload)
-    if (value.debugLogging !== undefined && typeof value.debugLogging !== 'boolean') throw new ClientModeError('INVALID_MESSAGE', 'The debug logging switch must be a boolean.')
-    if (value.remoteToolsEnabled !== undefined && typeof value.remoteToolsEnabled !== 'boolean') throw new ClientModeError('INVALID_MESSAGE', 'The Remote Tools switch must be a boolean.')
-    if (value.terminalEnabled !== undefined && typeof value.terminalEnabled !== 'boolean') throw new ClientModeError('INVALID_MESSAGE', 'The terminal switch must be a boolean.')
-    if (value.ports !== undefined && (!Array.isArray(value.ports) || value.ports.some((port) => !Number.isInteger(port)))) throw new ClientModeError('INVALID_MESSAGE', 'Loopback ports must be integers.')
-    if (value.terminalEnabled === undefined && value.remoteToolsEnabled === undefined && value.ports === undefined && value.debugLogging === undefined) throw new ClientModeError('INVALID_MESSAGE', 'A development setting is required.')
-    const current = editableConfig(resolveConfig(this.settings.get()))
-    const next = resolveConfig({ ...current,
+    if (value.debugLogging !== undefined && typeof value.debugLogging !== 'boolean') throw new ControlError('INVALID_MESSAGE', 'The debug logging switch must be a boolean.')
+    if (value.terminalEnabled !== undefined && typeof value.terminalEnabled !== 'boolean') throw new ControlError('INVALID_MESSAGE', 'The terminal switch must be a boolean.')
+    if (value.ports !== undefined && (!Array.isArray(value.ports) || value.ports.some((port) => !Number.isInteger(port)))) throw new ControlError('INVALID_MESSAGE', 'Loopback ports must be integers.')
+    if (value.terminalEnabled === undefined && value.ports === undefined && value.debugLogging === undefined) throw new ControlError('INVALID_MESSAGE', 'A development setting is required.')
+    const current = resolveConfig(this.settings.get())
+    const next = resolveConfig({ ...editableConfig(current),
       logLevel: value.debugLogging === undefined ? current.logLevel : value.debugLogging ? 'debug' : 'info',
       terminal: { enabled: value.terminalEnabled === undefined ? (current.terminal?.enabled ?? true) : value.terminalEnabled },
-      remoteTools: { enabled: value.remoteToolsEnabled === undefined ? (current.remoteTools?.enabled ?? true) : value.remoteToolsEnabled },
       loopback: { ports: value.ports === undefined ? (current.loopback?.ports ?? []) : value.ports },
     })
     await this.settings.replace(editableConfig(next))
+    this.config = next
     if (value.terminalEnabled !== undefined) this.host?.setTerminalEnabled?.(value.terminalEnabled)
     if (value.ports !== undefined) this.host?.setLoopbackPorts?.(value.ports)
     return this.settingsView()
   }
 
   private async setAppearance(payload: unknown): Promise<PluginSettingsView> {
-    if (this.settings === undefined) throw new ClientModeError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
+    if (this.settings === undefined) throw new ControlError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
     const entry = record(payload).sidebarEntry
-    if (entry !== 'standard' && entry !== 'compact') throw new ClientModeError('INVALID_MESSAGE', 'The sidebar entry style must be Standard or Compact.')
-    const current = editableConfig(resolveConfig(this.settings.get()))
-    await this.settings.replace(editableConfig(resolveConfig({ ...current, sidebar: { entry } })))
+    if (entry !== 'standard' && entry !== 'compact') throw new ControlError('INVALID_MESSAGE', 'The sidebar entry style must be Standard or Compact.')
+    const next = resolveConfig({ ...editableConfig(resolveConfig(this.settings.get())), sidebar: { entry } })
+    await this.settings.replace(editableConfig(next))
+    this.config = next
     return this.settingsView()
   }
 
-  private async setCodex(payload: unknown): Promise<PluginSettingsView> {
-    if (this.settings === undefined) {
-      throw new ClientModeError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
-    }
-    const enabled = record(payload).enabled
-    if (typeof enabled !== 'boolean') {
-      throw new ClientModeError('INVALID_MESSAGE', 'Codex Remote enabled must be a boolean.')
-    }
-    const current = resolveConfig(this.settings.get())
-    await this.settings.replace(editableConfig(resolveConfig({ ...editableConfig(current), codex: { ...current.codex, enabled } })))
-    await this.host?.setAgentBackends?.(resolveConfig(this.settings.get()))
-    return { ...await this.settingsView(), applies: 'live' }
-  }
-
-  private async authorizeOwnedRole(
-    serverUrl: string,
-    sourceRole: 'host' | 'client',
-    targetRole: 'host' | 'client',
-  ): Promise<void> {
-    if (!this.storageAvailable && this.startupFailure instanceof Error) {
-      throw this.startupFailure
-    }
-    const sourceDirectory = serverStorageDirectory(this.identityDirectory, serverUrl, sourceRole)
-    const sourceIdentity = await new IdentityStore({ directory: sourceDirectory, role: sourceRole }).loadOrCreate(hostname())
-    const sourceStore = new ServerCredentialStore(sourceDirectory)
-    if (await sourceStore.load(serverUrl, sourceIdentity.deviceId) === undefined) return
-    const sourceApi = sourceRole === 'host'
-      ? new HostServerApi(serverUrl, sourceStore)
-      : new ClientServerApi(serverUrl, sourceStore)
-    sourceApi.bindIdentity(sourceIdentity)
-    await sourceApi.loadStoredPolicy()
-    if (sourceApi.pairingHostOnly()) throw new ClientModeError('DEVICE_SCOPE_REQUIRED', 'Paired Host cannot create a Client identity.')
-    const sourceCredentials = await sourceApi.authenticate(sourceIdentity)
-
-    const targetDirectory = serverStorageDirectory(this.identityDirectory, serverUrl, targetRole)
-    const targetIdentity = await new IdentityStore({ directory: targetDirectory, role: targetRole }).loadOrCreate(hostname())
-    const targetApi = targetRole === 'host'
-      ? new HostServerApi(serverUrl, new ServerCredentialStore(targetDirectory))
-      : new ClientServerApi(serverUrl, new ServerCredentialStore(targetDirectory))
-    await targetApi.authorizeOwnedRole(targetIdentity, sourceCredentials.accessToken, sourceCredentials.account)
-  }
-
-  /**
-   * 工作台退出只清掉客户端身份的授权。Host 侧的中继和 Host 授权必须保留，
-   * 否则客户端会在退出工作台后失去可连接的本机。
-   */
-  private async logoutClient(): Promise<null> {
-    if (this.client === undefined) throw new ClientModeError('METHOD_NOT_ALLOWED', 'This plugin is not running in Client mode.')
-    await this.client.clearClientAuthorization()
-    const config = this.settings === undefined ? this.config : resolveConfig(this.settings.get())
-    if (config.serverUrl !== undefined) {
-      const directory = serverStorageDirectory(this.identityDirectory, config.serverUrl, 'client')
-      await new ServerCredentialStore(directory).clear()
-    }
-    return null
-  }
-
-  private logout(): Promise<PluginSettingsView> {
-    if (this.logoutFlight !== undefined) return this.logoutFlight
-    const task = this.clearAuthorization()
-    this.logoutFlight = task
-    void task.finally(() => {
-      if (this.logoutFlight === task) this.logoutFlight = undefined
-    }).catch(() => undefined)
-    return task
-  }
-
-  private async clearAuthorization(): Promise<PluginSettingsView> {
-    if (!this.storageAvailable && this.startupFailure instanceof Error) {
-      throw this.startupFailure
-    }
-    const config = this.settings === undefined ? this.config : resolveConfig(this.settings.get())
-    if (config.serverUrl !== undefined) {
-      const runtimes = await Promise.allSettled([
-        this.client?.clearClientAuthorization(),
-        this.host?.clearHostAuthorization(),
-      ])
-      const stores = await Promise.allSettled((['host', 'client'] as const).map(async role => {
-        const directory = serverStorageDirectory(this.identityDirectory, config.serverUrl!, role)
-        await new ServerCredentialStore(directory).clear()
-      }))
-      // A failed revocation must not skip the other role or leave its local
-      // credential behind. Report failure only after every cleanup settles.
-      const failure = [...runtimes, ...stores].find(result => result.status === 'rejected')
-      if (failure?.status === 'rejected') throw failure.reason
-    }
-    return this.settingsView()
-  }
-
-  private async settingsView(): Promise<PluginSettingsView> {
-    const config = this.settings === undefined ? editableConfig(this.config) : editableConfig(resolveConfig(this.settings.get()))
-    const associations = await this.associations(config)
-    const role = config.role === 'client' ? 'client' : 'host'
-    const association = associations[role]
+  private settingsView(): PluginSettingsView {
+    const config = this.settings === undefined
+      ? editableConfig(this.config)
+      : editableConfig(resolveConfig(this.settings.get()))
     return {
       config,
       deviceName: hostname(),
       writable: this.settings !== undefined,
-      applies: 'restart',
-      associations,
-      ...(association === undefined ? {} : { association }),
-      ...(this.startupFailure === undefined ? {} : {
-        startupError: safeStartupError(this.startupFailure),
-      }),
-    }
-  }
-
-  private async associations(config: Config): Promise<PluginSettingsView['associations']> {
-    if (config.serverUrl === undefined || !this.storageAvailable) return {}
-    const [host, client] = await Promise.all([
-      this.association(config.serverUrl, 'host'),
-      this.association(config.serverUrl, 'client'),
-    ])
-    return {
-      ...(host === undefined ? {} : { host }),
-      ...(client === undefined ? {} : { client }),
-    }
-  }
-
-  private async association(serverUrl: string, role: 'host' | 'client'): Promise<PluginAssociation | undefined> {
-    if (role === 'client' && this.host?.hostStatus?.()?.pairingHostOnly) return undefined
-    try {
-      const identities = new IdentityStore({
-        directory: serverStorageDirectory(this.identityDirectory, serverUrl, role),
-        role,
-      })
-      const identity = await identities.loadExisting()
-      if (identity === undefined) return undefined
-      const credentials = await new ServerCredentialStore(identities.directory).load(serverUrl, identity.deviceId)
-      if (credentials === undefined) return undefined
-      return {
-        method: credentials.authorizationMethod,
-        ...(credentials.account === undefined ? {} : { account: credentials.account }),
-      }
-    } catch (error) {
-      if (error instanceof IdentityInvalidError || error instanceof ServerCredentialsInvalidError) {
-        return undefined
-      }
-      throw error
+      ...(this.startupFailure === undefined ? {} : { startupError: safeStartupError(this.startupFailure) }),
     }
   }
 
   /**
-   * Attach the local Tailscale orchestration snapshot to any status-shaped
-   * result, including Client-mode status where the host-only shape is bypassed.
+   * Attach the local Tailscale orchestration snapshot to a status-shaped
+   * result so the settings page can render both from one payload.
    */
   private withTailnet(result: ControlResult<unknown>): ControlResult<unknown> {
     const tailnet = this.tailnet?.snapshot()
@@ -583,13 +244,9 @@ export class PluginControlRuntime {
   }
 
   private hostOnlyStatus(): Record<string, unknown> {
-    const tailnet = this.tailnet?.snapshot()
     return {
-      mode: 'local',
-      available: false,
       deviceName: hostname(),
       hostAuthorizationAvailable: this.host !== undefined,
-      ...(tailnet === undefined ? {} : { tailnet }),
       ...(this.host === undefined ? {} : { host: this.host.hostStatus() }),
     }
   }
@@ -598,10 +255,8 @@ export class PluginControlRuntime {
 function editableConfig(config: ResolvedConfig): Config {
   return {
     enabled: config.enabled,
-    role: config.role,
     ...(config.serverUrl === undefined ? {} : { serverUrl: config.serverUrl }),
     terminal: config.terminal,
-    remoteTools: config.remoteTools,
     sidebar: config.sidebar,
     hostControl: config.hostControl ?? { enabled: true },
     loopback: config.loopback,
@@ -631,28 +286,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function record(value: unknown): Record<string, unknown> {
-  if (!isRecord(value)) throw new ClientModeError('INVALID_MESSAGE', 'The control request payload is invalid.')
+  if (!isRecord(value)) throw new ControlError('INVALID_MESSAGE', 'The control request payload is invalid.')
   return value
 }
 
 function ok(value: unknown): ControlResult<unknown> { return { ok: true, value } }
 
-/** Attach the update-check snapshot to a successful status-shaped result. */
-function withUpdate(result: ControlResult<unknown>, update: PluginUpdateSnapshot | undefined): ControlResult<unknown> {
-  if (update === undefined || !result.ok || !isRecord(result.value)) return result
-  return ok({ ...result.value, update })
-}
-
 function fail(error: unknown): ControlResult<unknown> {
-  const source = error instanceof Error ? error : undefined
-  const remoteCode = source !== undefined && 'code' in source && typeof source.code === 'string'
-    ? source.code
-    : source instanceof ClientModeError ? source.code : undefined
+  const failure = error instanceof Error ? error : undefined
+  const remoteCode = failure !== undefined && 'code' in failure && typeof failure.code === 'string' ? failure.code : undefined
   return {
     ok: false,
     error: {
       code: 'internal',
-      message: source?.message ?? 'The plugin control operation failed.',
+      message: failure?.message ?? 'The plugin control operation failed.',
       details: remoteCode === undefined ? {} : { remoteCode },
     },
   }

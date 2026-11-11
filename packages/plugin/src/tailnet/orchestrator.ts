@@ -198,10 +198,6 @@ export class TailnetOrchestrator implements TailnetControl {
       this.disabled('已在设置中关闭 Tailscale 组网，未启动本地中继。')
       return
     }
-    if (config.role === 'client') {
-      this.disabled('当前是客户端模式，本地中继只在 Host 模式下启动。')
-      return
-    }
     if (config.serverUrl === undefined || relayPort === undefined) {
       this.disabled('服务器地址不是 http://127.0.0.1:<端口> 这样的本机地址，按外部服务器处理，未启动内置中继。')
       return

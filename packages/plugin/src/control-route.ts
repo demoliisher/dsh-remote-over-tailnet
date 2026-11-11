@@ -13,7 +13,7 @@ export const STATUS_STREAM_PATH = `${CONTROL_RPC_PREFIX}/${STATUS_STREAM_ENDPOIN
 const ENDPOINT_SEGMENT_PATTERN = /^[A-Za-z0-9_$.-]+$/
 const INVALID_REQUEST_RPC_ID = 'invalid-request'
 
-interface HostConnectionHandleLike {
+export interface HostConnectionHandleLike {
   requestRejection?(request: { headers: IncomingHttpHeaders }): number | undefined
   rpc: {
     handle?(

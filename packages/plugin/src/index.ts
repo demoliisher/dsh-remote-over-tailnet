@@ -4,7 +4,6 @@ import * as DshConnection from '@deepseek-ai/dsh-client-connection'
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only: pulls the `ctx.settings` Context merge and the rc.1 forms type.
 import type { SettingsForms } from '@deepseek-ai/dsh-settings'
-import { ClientModeRuntime, type HostConnectionHandle } from './client-runtime.js'
 import {
   Config,
   entryConfigSchema,
@@ -15,27 +14,22 @@ import {
   type ResolvedConfig,
 } from './config.js'
 import { PluginControlRuntime, type PluginSettingsBinding } from './control-runtime.js'
-import type { HostWebServerLike } from './control-route.js'
+import type { HostConnectionHandleLike, HostWebServerLike } from './control-route.js'
 import {
   IdentityStore,
   prepareDefaultIdentityDirectory,
-  resetDefaultIdentityRoles,
   serverStorageDirectory,
 } from './identity-store.js'
 import { SafeLogger } from './logging.js'
 import { safeStartupError } from './safe-error.js'
 import { HostPluginRuntime } from './service.js'
 import type { ScheduleCreateService } from './harness-remote-bridge.js'
-import { ClientServerApi } from './server-api.js'
-import { ServerCredentialStore } from './server-credentials.js'
 import type { TypertGatewayLike } from './typert-gateway-contract.js'
 import { subprocessTerminalSpawner, type HostSubprocessLike } from './codex-workspace-bridge.js'
 import { TypertGatewaySwitch } from './typert-gateway-switch.js'
 import type { FileViewerHostServiceLike } from './file-viewer-bridge.js'
 import { createPluginRouteDispatcher, type PluginRouteConnectionLike } from './plugin-route-dispatcher.js'
-import { installRemoteDiscoveryTools } from './remote-tools.js'
 import { runHmrSafe, type HmrContextLike } from './hmr-safe-settings.js'
-import { PluginUpdateChecker } from './update-check.js'
 import { TailnetOrchestrator } from './tailnet/orchestrator.js'
 import { PLUGIN_VERSION } from './version.js'
 import {
@@ -48,7 +42,6 @@ import {
 declare module '@deepseek-ai/cordis' {
   interface Context {
     dshRemote: HostPluginRuntime
-    dshRemoteClient: ClientModeRuntime
     typertGateway: TypertGatewayLike
   }
 }
@@ -117,7 +110,6 @@ interface DshWebServerPortLike {
   port?: number
 }
 
-
 export function apply(ctx: Context, entry: EntryConfig | ConfigShape | undefined = undefined): void {
   const readConfig = (): ConfigInput => readEntryConfig(entry)
   const entryId = locateEntryId(ctx)
@@ -141,32 +133,20 @@ export function apply(ctx: Context, entry: EntryConfig | ConfigShape | undefined
   // are resolved here.
   const activateWhenCarrierReady = async (runtimeContext: Context): Promise<void> => {
     const gateway = runtimeContext.get('typertGateway') as TypertGatewayLike
-    const connection = runtimeContext.get('connection') as HostConnectionHandle | undefined
+    const connection = runtimeContext.get('connection') as HostConnectionHandleLike | undefined
     const webServer = runtimeContext.get('webServer') as HostWebServerLike | undefined
     let disposePendingControl: (() => Promise<void>) | undefined
     const installPendingControl = async (): Promise<void> => {
       if (connection === undefined || disposePendingControl !== undefined) return
-      let identityDirectory = new IdentityStore().directory
       let storageError: unknown
       try {
-        identityDirectory = await prepareDefaultIdentityDirectory()
+        await prepareDefaultIdentityDirectory()
       } catch (error) {
         storageError = error
       }
       disposePendingControl = runtimeContext.effect(() => {
-        const control = new PluginControlRuntime(
-          resolveConfig(readConfig()),
-          identityDirectory,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          true,
-        )
-        if (storageError !== undefined) {
-          control.setStartupFailure(storageError, { storageAvailable: false })
-        }
+        const control = new PluginControlRuntime(resolveConfig(readConfig()), undefined, undefined)
+        if (storageError !== undefined) control.setStartupFailure(storageError)
         return control.register(connection, webServer)
       }, 'ds-harness-remote pending control')
     }
@@ -191,7 +171,7 @@ async function activate(
 ): Promise<void> {
   const settings = ctx.get('settings') as SettingsServiceLike | undefined
   const settingsBinding = await createSettingsBinding(ctx, settings, readConfig, entryId)
-  const connection = ctx.get('connection') as HostConnectionHandle | undefined
+  const connection = ctx.get('connection') as HostConnectionHandleLike | undefined
   const webServer = ctx.get('webServer') as HostWebServerLike | undefined
   // Reads resolve through the binding so the ≤0.1.6 scope's user layer (not the
   // raw composition seed) is honored; the rc.1 binding reads the live Config.
@@ -205,19 +185,8 @@ async function activate(
   }
   if (!config.enabled) {
     if (connection !== undefined) {
-      const controlRuntime = new PluginControlRuntime(
-        config,
-        defaultIdentityDirectory,
-        settingsBinding,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        true,
-      )
-      if (initialStorageError !== undefined) {
-        controlRuntime.setStartupFailure(initialStorageError, { storageAvailable: false })
-      }
+      const controlRuntime = new PluginControlRuntime(config, settingsBinding, undefined)
+      if (initialStorageError !== undefined) controlRuntime.setStartupFailure(initialStorageError)
       ctx.effect(() => controlRuntime.register(connection, webServer), 'ds-harness-remote disabled control')
     }
     return
@@ -231,9 +200,6 @@ async function activate(
     warn: message => { ctx.logger.warn(message); console.warn(message) },
     error: message => { ctx.logger.error(message); console.error(message) },
   }, () => resolveConfig(settingsBinding?.get() ?? readConfig()).logLevel)
-  // Startup and daily npm dist-tags lookup backing the client update notice.
-  // Lives for the whole activation so Server switches keep its snapshot.
-  const updateChecker = new PluginUpdateChecker(logger)
   // The official Typert gateway (`typertGateway` from dsh-api-gateway) is the
   // dispatch path behind `/api/commands/*` on the host. It is an explicit
   // activation dependency so a peer bridge never silently omits commands.
@@ -284,14 +250,13 @@ async function activate(
   const schedule = (ctx.get('schedule', false)
     ?? (ctx.root === undefined ? undefined : ctx.root.get('schedule', false))) as ScheduleCreateService | undefined
 
-  const createRuntimes = (config: ResolvedConfig) => {
+  const createRuntime = (config: ResolvedConfig): HostPluginRuntime => {
     const hostIdentities = new IdentityStore({
       directory: config.serverUrl === undefined
         ? defaultIdentityDirectory
-        : serverStorageDirectory(defaultIdentityDirectory, config.serverUrl, 'host'),
-      role: 'host',
+        : serverStorageDirectory(defaultIdentityDirectory, config.serverUrl),
     })
-    const runtime = new HostPluginRuntime(
+    return new HostPluginRuntime(
       config,
       hostIdentities,
       logger,
@@ -305,24 +270,6 @@ async function activate(
       ),
       schedule,
     )
-
-    let clientRuntime: ClientModeRuntime | undefined
-    if (config.serverUrl !== undefined && connection !== undefined) {
-      const clientIdentities = new IdentityStore({
-        directory: serverStorageDirectory(defaultIdentityDirectory, config.serverUrl, 'client'),
-        role: 'client',
-      })
-      clientRuntime = new ClientModeRuntime(
-        config,
-        clientIdentities,
-        new ClientServerApi(config.serverUrl, new ServerCredentialStore(clientIdentities.directory)),
-        nativeTypertGateway,
-        logger,
-        runtime,
-      )
-    }
-
-    return { runtime, clientRuntime }
   }
   const tailnet = initialStorageError === undefined
     ? new TailnetOrchestrator({
@@ -334,100 +281,23 @@ async function activate(
       })
     : undefined
   let runtime: HostPluginRuntime | undefined
-  let clientRuntime: ClientModeRuntime | undefined
   let hostServiceProvided = false
-  let clientServiceProvided = false
-  let clientActive = false
-  if (initialStorageError === undefined) {
-    ;({ runtime, clientRuntime } = createRuntimes(config))
-  }
-  let closed = false
-  let startup: Promise<void> | undefined
-  let replacement: Promise<{ client: ClientModeRuntime | undefined; host: HostPluginRuntime }> | undefined
-  const syncOptionalService = (
-    serviceName: 'dshRemote' | 'dshRemoteClient',
-    value: HostPluginRuntime | ClientModeRuntime,
-    owned: boolean,
-  ) => {
-    try {
-      if (serviceName === 'dshRemote') {
-        if (owned) ctx.dshRemote = value as HostPluginRuntime
-        else ctx.provide('dshRemote', value as HostPluginRuntime)
-      } else if (owned) {
-        ctx.dshRemoteClient = value as ClientModeRuntime
-      } else {
-        ctx.provide('dshRemoteClient', value as ClientModeRuntime)
-      }
-      return true
-    } catch {
-      logger.warn('failed to provide remote service', {
-        service: serviceName,
-        code: 'SERVICE_PROVIDE_CONFLICT',
-      })
-      return false
-    }
-  }
-  const replaceServer = (next: ResolvedConfig) => {
-    const previousReplacement = replacement
-    const operation = async () => {
-      await startup?.catch(() => undefined)
-      await previousReplacement?.catch(() => undefined)
-      if (closed) throw new Error('Remote plugin is closed')
-      clientActive = false
-      // Stop both authorities before loading identities scoped to another Server.
-      const shutdown = await Promise.allSettled([clientRuntime?.close(), runtime?.close()])
-      const failure = shutdown.find(result => result.status === 'rejected')
-      if (failure?.status === 'rejected') throw failure.reason
-      if (closed) throw new Error('Remote plugin is closed')
-      defaultIdentityDirectory = await prepareDefaultIdentityDirectory()
-      controlRuntime?.setIdentityDirectory(defaultIdentityDirectory)
-      await tailnet?.restart(next)
-      const fresh = createRuntimes(next)
-      try {
-        await fresh.runtime.start()
-        await fresh.clientRuntime?.start()
-        if (closed) throw new Error('Remote plugin is closed')
-      } catch (error) {
-        await Promise.allSettled([fresh.clientRuntime?.close(), fresh.runtime.close()])
-        throw error
-      }
-      runtime = fresh.runtime
-      clientRuntime = fresh.clientRuntime
-      clientActive = clientRuntime !== undefined
-      controlRuntime?.clearStartupFailure()
-      hostServiceProvided = syncOptionalService('dshRemote', runtime, hostServiceProvided)
-      if (clientRuntime !== undefined) {
-        clientServiceProvided = syncOptionalService('dshRemoteClient', clientRuntime, clientServiceProvided)
-      }
-      if (connection !== undefined) updateChecker.start()
-      return { client: clientRuntime, host: runtime }
-    }
-    replacement = operation()
-    return replacement
-  }
-
+  if (initialStorageError === undefined) runtime = createRuntime(config)
   const controlRuntime = connection === undefined
     ? undefined
-    : new PluginControlRuntime(
-        config,
-        defaultIdentityDirectory,
-        settingsBinding,
-        clientRuntime,
-        runtime,
-        replaceServer,
-        updateChecker,
-        true,
-        tailnet,
-      )
-  if (initialStorageError !== undefined) {
-    controlRuntime?.setStartupFailure(initialStorageError, { storageAvailable: false })
-  }
+    : new PluginControlRuntime(config, settingsBinding, runtime, tailnet)
+  if (initialStorageError !== undefined) controlRuntime?.setStartupFailure(initialStorageError)
 
   if (runtime !== undefined) {
-    hostServiceProvided = syncOptionalService('dshRemote', runtime, hostServiceProvided)
-  }
-  if (clientRuntime !== undefined) {
-    clientServiceProvided = syncOptionalService('dshRemoteClient', clientRuntime, clientServiceProvided)
+    try {
+      ctx.provide('dshRemote', runtime)
+      hostServiceProvided = true
+    } catch {
+      logger.warn('failed to provide remote service', {
+        service: 'dshRemote',
+        code: 'SERVICE_PROVIDE_CONFLICT',
+      })
+    }
   }
   await disableLegacyLoaderEntries(ctx, logger)
   await ctx.effect(async () => {
@@ -436,51 +306,34 @@ async function activate(
       logger.error('Remote plugin startup failed', safeStartupError(initialStorageError))
     } else {
       try {
-        startup = (async () => {
-          await tailnet?.start()
-          await runtime!.start()
+        await tailnet?.start()
+        await runtime!.start()
+        if (config.hostControl?.enabled === false) {
+          await runtime!.setHostControl(false)
+          tailnet?.reportAuthorizeSkipped('允许控制本机已关闭')
+        } else {
           await authorizeTailnetHost(tailnet, runtime!)
-          if (clientRuntime !== undefined) {
-            await clientRuntime.start()
-            clientActive = true
-          } else {
-            logger.warn('client remote mode is unavailable', {
-              serverConfigured: config.serverUrl !== undefined,
-              remoteGatewayAvailable: localTypertGateway.supportsCarrier,
-              connectionAvailable: connection !== undefined,
-            })
-          }
-        })()
-        await startup
-        // Only the browser/Desktop connection surfaces the update notice, so a
-        // Host composition without it skips the registry calls.
-        if (connection !== undefined) updateChecker.start()
+        }
       } catch (error) {
-        clientActive = false
         logger.error('Remote plugin startup failed', safeStartupError(error))
         controlRuntime?.setStartupFailure(error)
-        await Promise.allSettled([clientRuntime?.close(), runtime?.close()])
+        await runtime?.close()
       }
     }
     return async () => {
-      closed = true
-      clientActive = false
-      updateChecker.stop()
-      await replacement?.catch(() => undefined)
       await disposeControl?.()
       await tailnet?.stop()
-      await clientRuntime?.close()
       await runtime?.close()
     }
   }, 'ds-harness-remote lifecycle')
-  if (config.remoteTools?.enabled) installRemoteDiscoveryTools(ctx, () => closed || !clientActive ? undefined : clientRuntime)
+  void hostServiceProvided
 }
 
 /**
  * 中继就绪后用面板展示的账号密码完成 Host 设备授权。
  *
  * 每次都重新登录并注册设备：中继的 state.json 可能被重建或密码轮换，本地旧令牌会失效，
- * 幂等重新注册可覆盖过期凭据；失败只写面板，交给 Host 自己的重连与手动登录兜底。
+ * 幂等重新注册可覆盖过期凭据；失败只写面板，交给 Host 自己的重连兜底。
  */
 async function authorizeTailnetHost(
   tailnet: TailnetOrchestrator | undefined,
@@ -572,10 +425,10 @@ async function createSettingsBinding(
   //
   // That registry also returns `mergeLayers(base, user)` unchanged while no
   // section is stored (`user === undefined`), so the entry Config never reaches
-  // the schema on a fresh install: `serverUrl`, `loopback.ports` and `acp` all
-  // disappear. Resolve it inside the registered schema instead of merging on
-  // every read, so a stored section — including an explicit reset — keeps the
-  // registry's own precedence.
+  // the schema on a fresh install: `serverUrl` and `loopback.ports` disappear.
+  // Resolve it inside the registered schema instead of merging on every read,
+  // so a stored section — including an explicit reset — keeps the registry's
+  // own precedence.
   const base = readConfig()
   const resolveRegistration = (input?: unknown) =>
     entryConfigSchema((input === undefined ? base : input) as Parameters<typeof entryConfigSchema>[0])
@@ -634,20 +487,18 @@ export {
   IdentityInvalidError,
   IdentityStore,
   prepareDefaultIdentityDirectory,
-  resetDefaultIdentityRoles,
 } from './identity-store.js'
 export { serverStorageDirectory } from './identity-store.js'
-export type { HostIdentity, IdentityErrorCode, RemoteDeviceRole, ResetIdentityOptions, TrustedPeer } from './identity-store.js'
-export { ClientServerApi, HostServerApi, ServerApiError } from './server-api.js'
+export type { HostIdentity, IdentityErrorCode, TrustedPeer } from './identity-store.js'
+export { HostServerApi, ServerApiError } from './server-api.js'
 export { HostServerConnection } from './server-connection.js'
 export type { WebSocketFactory } from './server-connection.js'
 export { ServerCredentialStore, ServerCredentialsInvalidError } from './server-credentials.js'
 export type { ServerCredentials } from './server-credentials.js'
 export { HOST_CAPABILITIES, RpcError, RpcRouter } from './rpc-router.js'
 export { HostPluginRuntime } from './service.js'
-export { ClientModeError, ClientModeRuntime } from './client-runtime.js'
 export { PluginControlRuntime } from './control-runtime.js'
-export { ClientSecureTransport } from './client-secure-transport.js'
+export type { HostControl, PluginSettingsBinding, PluginSettingsView } from './control-runtime.js'
 export { HARNESS_REMOTE_ALLOWLIST, HarnessRemoteBridge } from './harness-remote-bridge.js'
 export { RemoteTypertGateway } from './remote-typert-gateway.js'
 export { RemoteFileViewerBridge } from './file-viewer-bridge.js'
@@ -655,10 +506,7 @@ export { CodexRemoteDomain } from './codex/domain.js'
 export { CodexPeerBridge } from './codex/peer-bridge.js'
 export { CodexAppServerClient, CodexAppServerError } from './codex/app-server.js'
 export { CODEX_APP_ALLOWLIST } from './codex/method-policy.js'
-export { createRemoteFileContentProvider } from './remote-file-content-provider.js'
 export { TypertGatewaySwitch } from './typert-gateway-switch.js'
-export { runCli } from './cli.js'
-export type { RemoteCliDependencies } from './cli.js'
 export type {
   LocalTypertGateway,
   RemoteTypertGatewayTarget,

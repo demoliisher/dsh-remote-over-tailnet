@@ -1,165 +1,267 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
-import { hostname, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { hostname } from 'node:os'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ControlResult } from '../src/control-result.js'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { HostAuthorizationControl, HostConnectionHandle } from '../src/client-runtime.js'
-import type { ClientModeRuntime } from '../src/client-runtime.js'
-import { runScenarios } from '../../../scripts/test-scenarios.mjs'
 import { resolveConfig, type Config } from '../src/config.js'
 import { CONTROL_RPC_PREFIX } from '../src/control-route.js'
-import { PluginControlRuntime, type PluginSettingsBinding } from '../src/control-runtime.js'
-import { IdentityInvalidError, IdentityStore, serverStorageDirectory } from '../src/identity-store.js'
-import { ServerCredentialStore } from '../src/server-credentials.js'
+import { PluginControlRuntime, type HostControl, type PluginSettingsBinding } from '../src/control-runtime.js'
+import { IdentityInvalidError } from '../src/identity-store.js'
+import type { HostRemoteStatus } from '../src/service.js'
+import type { TailnetControl, TailnetSnapshot } from '../src/tailnet/orchestrator.js'
 
-const directories: string[] = []
-
-afterEach(async () => {
+beforeEach(() => {
   vi.unstubAllGlobals()
-  await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })))
 })
 
-describe('PluginControlRuntime settings setup', () => {
-  it('persists debug logging and rejects invalid switches without changing other settings', async () => {
+describe('PluginControlRuntime settings', () => {
+  it('persists development switches and forwards them to the running Host', async () => {
     const settings = settingsBinding({ terminal: { enabled: false }, logLevel: 'warn' })
-    const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), await temporaryDirectory(), settings, undefined, undefined))
-    expect(await handler('settings.development.set', { debugLogging: true }, signal())).toMatchObject({ ok: true })
-    expect(settings.get()).toMatchObject({ logLevel: 'debug', terminal: { enabled: false } })
-    expect(await handler('settings.development.set', { debugLogging: 'true' }, signal())).toMatchObject({ ok: false })
-    expect(settings.get().logLevel).toBe('debug')
+    const setTerminalEnabled = vi.fn()
+    const setLoopbackPorts = vi.fn()
+    const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, hostStub({ setTerminalEnabled, setLoopbackPorts })))
+
+    expect(await handler('settings.development.set', { debugLogging: true, terminalEnabled: true, ports: [4100, 4100] }, signal()))
+      .toMatchObject({ ok: true })
+    expect(settings.get()).toMatchObject({ logLevel: 'debug', terminal: { enabled: true }, loopback: { ports: [4100] } })
+    expect(setTerminalEnabled).toHaveBeenCalledWith(true)
+    expect(setLoopbackPorts).toHaveBeenCalledWith([4100, 4100])
+
     expect(await handler('settings.development.set', { debugLogging: false }, signal())).toMatchObject({ ok: true })
     expect(settings.get().logLevel).toBe('info')
+    expect(await handler('settings.development.set', {}, signal()))
+      .toMatchObject({ ok: false, error: { details: { remoteCode: 'INVALID_MESSAGE' } } })
+    expect(await handler('settings.development.set', { debugLogging: 'true' }, signal()))
+      .toMatchObject({ ok: false, error: { details: { remoteCode: 'INVALID_MESSAGE' } } })
+    expect(await handler('settings.development.set', { terminalEnabled: 'yes' }, signal()))
+      .toMatchObject({ ok: false, error: { details: { remoteCode: 'INVALID_MESSAGE' } } })
+    expect(await handler('settings.development.set', { ports: [1.5] }, signal()))
+      .toMatchObject({ ok: false, error: { details: { remoteCode: 'INVALID_MESSAGE' } } })
+
+    const unwritable = register(new PluginControlRuntime(resolveConfig({}), undefined, hostStub()))
+    expect(await unwritable('settings.development.set', { debugLogging: true }, signal()))
+      .toMatchObject({ ok: false, error: { details: { remoteCode: 'SETTINGS_UNAVAILABLE' } } })
   })
 
-  it('keeps pairing on local Host control and refuses Host-only role escalation', async () => {
-    const directory = await temporaryDirectory()
-    const settings = settingsBinding({ serverUrl: 'https://relay.example.test' })
-    const pairingControl = vi.fn(async () => ({ state: 'claimed', localSaved: false }))
-    const clientControl = vi.fn(async () => ({ ok: true, value: {} }))
-    const host = { hostStatus: () => ({ pairingHostOnly: true }), pairingControl } as unknown as HostAuthorizationControl
-    const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), directory, settings,
-      { handleControl: clientControl } as unknown as ClientModeRuntime, host))
-    await expect(handler('host.pairing.confirm', { sessionId: 'specific-session', verificationCode: '00123456' }, signal())).resolves.toMatchObject({ ok: true })
-    expect(pairingControl).toHaveBeenCalledWith('confirm', { sessionId: 'specific-session', verificationCode: '00123456' })
-    expect(clientControl).not.toHaveBeenCalled()
-    await expect(handler('settings.role.set', { role: 'client' }, signal())).resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'DEVICE_SCOPE_REQUIRED' } } })
-    await expect(handler('settings.configure', { role: 'client', serverUrl: 'https://relay.example.test', email: 'test@example.test', password: 'password' }, signal())).resolves.toMatchObject({ ok: false })
+  it('persists the sidebar appearance and rejects unknown entries', async () => {
+    const settings = settingsBinding({})
+    const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, hostStub()))
+
+    const compact = await handler('settings.appearance.set', { sidebarEntry: 'compact' }, signal())
+    expect(compact).toMatchObject({ ok: true, value: { config: { sidebar: { entry: 'compact' } } } })
+    expect(settings.get().sidebar).toEqual({ entry: 'compact' })
+    await expect(handler('settings.appearance.set', { sidebarEntry: 'standard' }, signal()))
+      .resolves.toMatchObject({ ok: true, value: { config: { sidebar: { entry: 'standard' } } } })
+    await expect(handler('settings.appearance.set', { sidebarEntry: 'wide' }, signal()))
+      .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'INVALID_MESSAGE' } } })
   })
 
-  it('holds login discovery until Server replacement settles and rejects overlapping saves', async () => {
-    await runScenarios([false, true].map(fails => ({ name: fails ? 'replacement fails' : 'replacement succeeds', run: async () => {
-      const directory = await temporaryDirectory()
-      const settings = settingsBinding({ serverUrl: 'https://old.example.com' })
-      let release!: () => void
-      let started!: () => void
-      const gate = new Promise<void>(resolve => { release = resolve })
-      const ready = new Promise<void>(resolve => { started = resolve })
-      const oldHandle = vi.fn(async () => ({ ok: true, value: ['old'] }))
-      const newHandle = vi.fn(async () => ({ ok: true, value: ['new'] }))
-      const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), directory, settings,
-        { handleControl: oldHandle } as unknown as ClientModeRuntime, undefined, async () => {
-          started()
-          await gate
-          if (fails) throw new Error('replacement failed')
-          return { client: { handleControl: newHandle } as unknown as ClientModeRuntime, host: {} as HostAuthorizationControl }
-        }))
-      const saving = handler('settings.server.set', { serverUrl: 'https://new.example.com' }, signal())
-      await ready
-      const providers = handler('client.account.providers', {}, signal())
-      try {
-        await expect(handler('settings.server.set', { serverUrl: 'https://other.example.com' }, signal())).resolves.toMatchObject({
-          ok: false, error: { details: { remoteCode: 'SERVER_SWITCH_BUSY' } },
-        })
-        expect(oldHandle).not.toHaveBeenCalled()
-        expect(newHandle).not.toHaveBeenCalled()
-        release()
-        await expect(saving).resolves.toMatchObject({ ok: !fails })
-        await expect(providers).resolves.toMatchObject(fails ? { ok: false } : { ok: true, value: ['new'] })
-        expect(oldHandle).not.toHaveBeenCalled()
-        expect(newHandle).toHaveBeenCalledTimes(fails ? 0 : 1)
-      } finally {
-        release()
-        await Promise.allSettled([saving, providers])
-      }
-    } })))
-  })
+  it('exposes the editable config view with device name, writability and startup errors', async () => {
+    const settings = settingsBinding({ serverUrl: 'https://relay.example.test', codex: { enabled: false } })
+    const control = new PluginControlRuntime(resolveConfig(settings.get()), settings, hostStub())
+    const handler = register(control)
 
-  it('finishes both roles and credential cleanup in one shared sign-out even when one revocation fails', async () => {
-    await runScenarios((['client', 'host'] as const).map(failingRole => ({ name: failingRole, run: async () => {
-      const directory = await temporaryDirectory()
-      const settings = settingsBinding({ serverUrl: 'https://relay.example.test' })
-      const stores = (['client', 'host'] as const).map(role => new ServerCredentialStore(
-        serverStorageDirectory(directory, 'https://relay.example.test', role),
-      ))
-      for (const store of stores) await store.save({
-        serverUrl: 'https://relay.example.test', deviceId: 'old-device', authorizationMethod: 'account', ...tokens(),
-      })
-      let release!: () => void
-      let started!: () => void
-      const ready = new Promise<void>(resolve => { started = resolve })
-      const gate = new Promise<void>(resolve => { release = resolve })
-      const clear = (role: 'host' | 'client') => vi.fn(async () => {
-        if (role === failingRole) throw new Error('revocation failed')
-        started()
-        await gate
-      })
-      const client = { clearClientAuthorization: clear('client') }
-      const host = { clearHostAuthorization: clear('host') }
-      const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), directory, settings,
-        client as unknown as ClientModeRuntime, host as unknown as HostAuthorizationControl))
-      let completed = false
-      const first = handler('settings.logout', {}, signal()).then(result => { completed = true; return result })
-      await ready
-      const second = handler('settings.logout', {}, signal())
-      await Promise.resolve()
-      expect(completed).toBe(false)
-      release()
-      for (const result of await Promise.all([first, second])) expect(result).toMatchObject({ ok: false })
-      expect(client.clearClientAuthorization).toHaveBeenCalledOnce()
-      expect(host.clearHostAuthorization).toHaveBeenCalledOnce()
-      for (const store of stores) await expect(store.load('https://relay.example.test', 'old-device')).resolves.toBeUndefined()
-      await expect(handler('settings.get', {}, signal())).resolves.toMatchObject({ ok: true, value: { associations: {} } })
-    } })))
-  })
-
-  it('signs out only the Client and keeps the Host relay authorization', async () => {
-    const directory = await temporaryDirectory()
-    const serverUrl = 'https://relay.example.test'
-    const settings = settingsBinding({ serverUrl })
-    const stores = {
-      client: new ServerCredentialStore(serverStorageDirectory(directory, serverUrl, 'client')),
-      host: new ServerCredentialStore(serverStorageDirectory(directory, serverUrl, 'host')),
-    }
-    for (const store of Object.values(stores)) {
-      await store.save({ serverUrl, deviceId: 'relay-device', authorizationMethod: 'account', ...tokens() })
-    }
-    const clearClientAuthorization = vi.fn(async () => undefined)
-    const clearHostAuthorization = vi.fn(async () => undefined)
-    const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), directory, settings,
-      { clearClientAuthorization } as unknown as ClientModeRuntime,
-      { clearHostAuthorization } as unknown as HostAuthorizationControl))
-
-    await expect(handler('client.logout', {}, signal())).resolves.toMatchObject({ ok: true, value: null })
-
-    expect(clearClientAuthorization).toHaveBeenCalledOnce()
-    expect(clearHostAuthorization).not.toHaveBeenCalled()
-    await expect(stores.client.load(serverUrl, 'relay-device')).resolves.toBeUndefined()
-    await expect(stores.host.load(serverUrl, 'relay-device')).resolves.toBeDefined()
-  })
-
-  it('applies backend settings to the running Host after persistence', async () => {
-    const directory = await temporaryDirectory()
-    const settings = settingsBinding({ codex: { enabled: false } })
-    const apply = vi.fn(async (config: ReturnType<typeof resolveConfig>) => {
-      expect(resolveConfig(settings.get()).codex.enabled).toBe(config.codex.enabled)
+    const view = await handler('settings.get', {}, signal())
+    expect(view).toMatchObject({
+      ok: true,
+      value: {
+        deviceName: hostname(),
+        writable: true,
+        config: {
+          enabled: true,
+          serverUrl: 'https://relay.example.test',
+          hostControl: { enabled: true },
+          codex: { enabled: false, binary: 'codex' },
+          tailnet: { enabled: true, servePort: 443 },
+        },
+      },
     })
-    const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), directory, settings, undefined, { setAgentBackends: apply } as unknown as HostAuthorizationControl))
-    await expect(handler('settings.codex.set', { enabled: true }, signal())).resolves.toMatchObject({ ok: true, value: { applies: 'live' } })
-    expect(apply).toHaveBeenCalledTimes(1)
-    expect(apply.mock.calls[0]?.[0].codex.enabled).toBe(true)
+    const config = (view as { ok: true; value: { config: Config } }).value.config
+    expect(config).not.toHaveProperty('role')
+    expect(config).not.toHaveProperty('remoteTools')
+
+    const unwritable = register(new PluginControlRuntime(resolveConfig({}), undefined, undefined))
+    await expect(unwritable('settings.get', {}, signal())).resolves.toMatchObject({
+      ok: true,
+      value: { writable: false, config: { enabled: true } },
+    })
+
+    control.setStartupFailure(new IdentityInvalidError('device public and private keys do not match'))
+    await expect(handler('settings.get', {}, signal())).resolves.toMatchObject({
+      ok: true,
+      value: { startupError: { code: 'IDENTITY_INVALID', message: 'device public and private keys do not match' } },
+    })
+    await expect(handler('status', {}, signal())).resolves.toMatchObject({
+      ok: true,
+      value: {
+        deviceName: hostname(),
+        hostAuthorizationAvailable: false,
+        startupError: { code: 'IDENTITY_INVALID', message: 'device public and private keys do not match' },
+      },
+    })
+    expect(hostname()).toBeTruthy()
+  })
+})
+
+describe('PluginControlRuntime Host control', () => {
+  it('turns Host control off without revoking the device and persists the switch', async () => {
+    const settings = settingsBinding({ serverUrl: 'https://relay.example.test' })
+    const setHostControl = vi.fn(async (_enabled: boolean) => undefined)
+    const authorizeHostWithAccount = vi.fn(async () => ({ method: 'account' }))
+    const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, hostStub({ setHostControl, authorizeHostWithAccount })))
+
+    const off = await handler('host.authorization.set', { enabled: false }, signal())
+    expect(off).toMatchObject({
+      ok: true,
+      value: { deviceName: hostname(), hostAuthorizationAvailable: true, host: { enabled: true, connectedClients: [] } },
+    })
+    expect(setHostControl).toHaveBeenCalledWith(false)
+    expect(authorizeHostWithAccount).not.toHaveBeenCalled()
+    expect(settings.get().hostControl).toEqual({ enabled: false })
+
+    await expect(handler('host.authorization.set', { enabled: 'false' }, signal()))
+      .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'INVALID_MESSAGE' } } })
+    expect(settings.get().hostControl).toEqual({ enabled: false })
+
+    const noHost = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, undefined))
+    await expect(noHost('host.authorization.set', { enabled: true }, signal()))
+      .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'METHOD_NOT_ALLOWED' } } })
   })
 
-  it('coexists with a Remote Web UI that already owns /remote', async () => {
+  it('re-authorizes through the tailnet before resuming Host control', async () => {
+    const settings = settingsBinding({ serverUrl: 'https://relay.example.test' })
+    const calls: string[] = []
+    const host = hostStub({
+      setHostControl: vi.fn(async (enabled: boolean) => { calls.push(`setHostControl:${String(enabled)}`) }),
+      authorizeHostWithAccount: vi.fn(async (email: string, password: string) => {
+        calls.push(`authorize:${email}:${password}`)
+        return { method: 'account' }
+      }),
+    })
+    const tailnet = tailnetStub({ credentials: { account: 'relay@example.test', password: 'relay-password' } })
+    const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, host, tailnet))
+
+    await expect(handler('host.authorization.set', { enabled: true }, signal())).resolves.toMatchObject({ ok: true })
+    expect(calls).toEqual(['authorize:relay@example.test:relay-password', 'setHostControl:true'])
+    expect(tailnet.reportAuthorized).toHaveBeenCalledOnce()
+    expect(tailnet.reportAuthorizeFailure).not.toHaveBeenCalled()
+    expect(settings.get().hostControl).toEqual({ enabled: true })
+
+    const failure = new Error('relay rejected the Host')
+    calls.length = 0
+    const rejecting = tailnetStub({ credentials: { account: 'relay@example.test', password: 'relay-password' } })
+    vi.mocked(rejecting.credentials).mockReturnValue({ account: 'relay@example.test', password: 'relay-password' })
+    const rejectingHandler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, hostStub({
+      authorizeHostWithAccount: vi.fn(async () => { throw failure }),
+      setHostControl: vi.fn(async (enabled: boolean) => { calls.push(`setHostControl:${String(enabled)}`) }),
+    }), rejecting))
+    const failed = await rejectingHandler('host.authorization.set', { enabled: true }, signal())
+    expect(failed).toMatchObject({ ok: false, error: { message: 'relay rejected the Host' } })
+    expect(rejecting.reportAuthorizeFailure).toHaveBeenCalledWith(failure)
+    expect(calls).toEqual([])
+
+    const unavailable = tailnetStub({ credentials: undefined })
+    const unavailableHandler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, hostStub(), unavailable))
+    await expect(unavailableHandler('host.authorization.set', { enabled: true }, signal()))
+      .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'CREDENTIALS_UNAVAILABLE' } } })
+  })
+
+  it('starts a manual reconnect and reports Host activity without a tailnet', async () => {
+    const reconnectHost = vi.fn()
+    const host = hostStub({
+      reconnectHost,
+      hostStatus: () => hostStatus({ reconnecting: true, lastActiveAt: 1_723_456_789_000, error: 'CONNECTION_FAILED' }),
+    })
+    const handler = register(new PluginControlRuntime(resolveConfig({ serverUrl: 'https://relay.example.test' }), undefined, host))
+
+    await expect(handler('host.reconnect', {}, signal())).resolves.toMatchObject({
+      ok: true,
+      value: {
+        host: { reconnecting: true, lastActiveAt: 1_723_456_789_000, error: 'CONNECTION_FAILED' },
+        hostAuthorizationAvailable: true,
+      },
+    })
+    expect(reconnectHost).toHaveBeenCalledOnce()
+
+    const noHost = register(new PluginControlRuntime(resolveConfig({}), undefined, undefined))
+    await expect(noHost('host.reconnect', {}, signal()))
+      .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'METHOD_NOT_ALLOWED' } } })
+  })
+
+  it('merges the tailnet snapshot into the status payload', async () => {
+    const snapshot = tailnetSnapshot()
+    const host = hostStub({ hostStatus: () => hostStatus() })
+    const handler = register(new PluginControlRuntime(resolveConfig({ serverUrl: 'https://relay.example.test' }), undefined, host, tailnetStub({ snapshot })))
+
+    await expect(handler('status', {}, signal())).resolves.toMatchObject({
+      ok: true,
+      value: {
+        deviceName: hostname(),
+        hostAuthorizationAvailable: true,
+        tailnet: snapshot,
+        host: { configured: true, online: true, connectedClients: [] },
+      },
+    })
+
+    const noHost = register(new PluginControlRuntime(resolveConfig({ serverUrl: 'https://relay.example.test' }), undefined, undefined, tailnetStub({ snapshot })))
+    const status = await noHost('status', {}, signal())
+    expect(status).toMatchObject({ ok: true, value: { hostAuthorizationAvailable: false, tailnet: snapshot } })
+    expect((status as { ok: true; value: Record<string, unknown> }).value).not.toHaveProperty('host')
+  })
+})
+
+describe('PluginControlRuntime tailnet', () => {
+  it('reads and updates the relay credentials', async () => {
+    const snapshot = tailnetSnapshot()
+    const updatedSnapshot = { ...tailnetSnapshot(), relayPort: 9090 }
+    const tailnet = tailnetStub({
+      snapshot,
+      credentials: { account: 'relay@example.test', password: 'relay-password' },
+      updateCredentials: vi.fn(async () => updatedSnapshot),
+    })
+    const authorizeHostWithAccount = vi.fn(async () => ({ method: 'account' }))
+    const host = hostStub({ authorizeHostWithAccount })
+    const handler = register(new PluginControlRuntime(resolveConfig({}), undefined, host, tailnet))
+
+    await expect(handler('tailnet.credentials', {}, signal())).resolves.toMatchObject({
+      ok: true,
+      value: { account: 'relay@example.test', password: 'relay-password' },
+    })
+    expect(await handler('tailnet.status', {}, signal())).toMatchObject({ ok: true, value: snapshot })
+
+    await expect(handler('tailnet.credentials.update', { account: ' new@example.test ', password: 'new-password' }, signal()))
+      .resolves.toMatchObject({ ok: true, value: updatedSnapshot })
+    expect(tailnet.updateCredentials).toHaveBeenCalledWith({ account: 'new@example.test', password: 'new-password' })
+    expect(authorizeHostWithAccount).toHaveBeenCalledWith('new@example.test', 'new-password')
+    expect(tailnet.reportAuthorized).toHaveBeenCalledOnce()
+
+    const updated = tailnetStub({ updateCredentials: vi.fn(async () => snapshot) })
+    const withoutHost = register(new PluginControlRuntime(resolveConfig({}), undefined, undefined, updated))
+    await expect(withoutHost('tailnet.credentials.update', { account: 'a@example.test', password: 'pw' }, signal()))
+      .resolves.toMatchObject({ ok: true, value: snapshot })
+    expect(authorizeHostWithAccount).toHaveBeenCalledTimes(1)
+
+    await expect(handler('tailnet.credentials.update', { account: 'a@example.test', password: '' }, signal()))
+      .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'INVALID_MESSAGE' } } })
+    expect(tailnet.updateCredentials).toHaveBeenCalledTimes(1)
+
+    const failing = tailnetStub({ updateCredentials: vi.fn(async () => { throw new Error('relay restart failed') }), credentials: { account: 'a@example.test', password: 'pw' } })
+    const failingHandler = register(new PluginControlRuntime(resolveConfig({}), undefined, hostStub(), failing))
+    await expect(failingHandler('tailnet.credentials.update', { account: 'a@example.test', password: 'pw' }, signal()))
+      .resolves.toMatchObject({ ok: false, error: { message: 'relay restart failed' } })
+
+    await expect(handler('tailnet.credentials', {}, signal())).resolves.toMatchObject({ ok: true })
+    const disabled = register(new PluginControlRuntime(resolveConfig({}), undefined, hostStub()))
+    await expect(disabled('tailnet.credentials', {}, signal()))
+      .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'METHOD_NOT_ALLOWED' } } })
+    await expect(disabled('tailnet.status', {}, signal())).resolves.toMatchObject({ ok: true, value: null })
+
+    const ungenerated = register(new PluginControlRuntime(resolveConfig({}), undefined, hostStub(), tailnetStub({ credentials: undefined })))
+    await expect(ungenerated('tailnet.credentials', {}, signal()))
+      .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'CREDENTIALS_UNAVAILABLE' } } })
+  })
+})
+
+describe('PluginControlRuntime registration', () => {
+  it('registers the control endpoint on the loopback RPC channel', async () => {
     const channels = new Set(['/remote'])
     const connection = {
       rpc: {
@@ -169,10 +271,8 @@ describe('PluginControlRuntime settings setup', () => {
           return async () => { channels.delete(channel) }
         }),
       },
-    } as unknown as HostConnectionHandle
-    const runtime = new PluginControlRuntime(
-      resolveConfig(), '/unused', undefined, undefined, undefined,
-    )
+    }
+    const runtime = new PluginControlRuntime(resolveConfig({}), undefined, undefined)
 
     const dispose = runtime.register(connection)
 
@@ -181,20 +281,16 @@ describe('PluginControlRuntime settings setup', () => {
     expect(channels).toEqual(new Set(['/remote']))
   })
 
-  it('registers loopback control directly on webServer when dsh-v0.1.5 exposes request rejection', async () => {
+  it('registers loopback control directly on the web server when request rejection is available', async () => {
     const legacyHandle = vi.fn(() => async () => undefined)
     const requestRejection = vi.fn(() => undefined)
     const registerRoute = vi.fn(() => async () => undefined)
-    const runtime = new PluginControlRuntime(
-      resolveConfig(), '/unused', undefined, undefined, undefined,
-    )
+    const runtime = new PluginControlRuntime(resolveConfig({}), undefined, undefined)
 
     const dispose = runtime.register({
       requestRejection,
       rpc: { handle: legacyHandle },
-    } as unknown as HostConnectionHandle, {
-      register: registerRoute,
-    })
+    }, { register: registerRoute })
 
     expect(legacyHandle).not.toHaveBeenCalled()
     expect(registerRoute).toHaveBeenCalledWith(expect.objectContaining({
@@ -205,362 +301,15 @@ describe('PluginControlRuntime settings setup', () => {
     await dispose()
   })
 
-  it('updates the Server address without creating a separate authorization', async () => {
-    const directory = await temporaryDirectory()
-    const settings = settingsBinding({
-      serverUrl: 'https://old.example.com',
-      role: 'client',
-      codex: { enabled: true, binary: '/opt/codex' },
-    })
-    const handler = register(new PluginControlRuntime(
-      resolveConfig(settings.get()), directory, settings, undefined, undefined,
-    ))
-
-    await expect(handler('settings.server.set', {
-      serverUrl: 'https://remote.example.com/',
-    }, signal())).resolves.toMatchObject({
-      ok: true,
-      value: {
-        config: {
-          serverUrl: 'https://remote.example.com',
-          codex: { enabled: true, binary: '/opt/codex' },
-        },
-        associations: {},
-        applies: 'restart',
-      },
-    })
-    expect(settings.get()).toMatchObject({
-      serverUrl: 'https://remote.example.com',
-      role: 'client',
-      codex: { enabled: true, binary: '/opt/codex' },
-    })
-
-    await expect(handler('settings.codex.set', { enabled: false }, signal())).resolves.toMatchObject({
-      ok: true,
-      value: { config: { codex: { enabled: false, binary: '/opt/codex' } } },
-    })
-    expect(settings.get()).toMatchObject({ codex: { enabled: false, binary: '/opt/codex' } })
-
-    await expect(handler('settings.acp.set', { backend: 'codex', enabled: true }, signal())).resolves.toMatchObject({ ok: false })
-    await expect(handler('settings.cursor.set', { enabled: true }, signal())).resolves.toMatchObject({ ok: false })
-
-  })
-
-  it('exposes Host activity and starts a manual reconnect through loopback control', async () => {
-    const reconnectHost = vi.fn()
-    const host = {
-      hostStatus: vi.fn(() => ({
-        configured: true,
-        online: false,
-        reconnecting: true,
-        lastActiveAt: 1_723_456_789_000,
-        error: 'CONNECTION_FAILED',
-        authorized: false,
-        accountRequired: false,
-      })),
-      reconnectHost,
-      clearHostAuthorization: vi.fn(),
-      authorizeHostAsOwned: vi.fn(),
-      authorizeHostWithAccount: vi.fn(),
-      authorizeHostWithCode: vi.fn(),
-    } satisfies HostAuthorizationControl
-    const handler = register(new PluginControlRuntime(
-      resolveConfig({ serverUrl: 'https://relay.example.test' }), '/unused', undefined, undefined, host,
-    ))
-
-    await expect(handler('host.reconnect', {}, signal())).resolves.toMatchObject({
-      ok: true,
-      value: {
-        host: {
-          reconnecting: true,
-          lastActiveAt: 1_723_456_789_000,
-          error: 'CONNECTION_FAILED',
-        },
-      },
-    })
-    expect(reconnectHost).toHaveBeenCalledOnce()
-  })
-
-  it('authorizes a Host before saving its Server and role without persisting the password', async () => {
-    const directory = await temporaryDirectory()
-    const settings = settingsBinding({ serverUrl: 'https://old.example.com', role: 'client' })
-    const calls: Array<{ url: string; init?: RequestInit }> = []
-    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const url = String(input)
-      calls.push({ url, init })
-      if (url.endsWith('/auth/login')) return json({
-        token: 'web-account-token-value',
-        expiresAt: Date.now() + 600_000,
-        account: 'host@example.com',
-        profile: {},
-        isAdmin: false,
-      })
-      if (url.endsWith('/devices/register')) return json(tokens())
-      if (url.endsWith('/devices/register-owned-role')) return json(tokens({
-        accessToken: 'client-access-token-value',
-        refreshToken: 'client-refresh-token-value',
-      }))
-      throw new Error(`unexpected request: ${url}`)
-    }))
-    const handler = register(new PluginControlRuntime(
-      resolveConfig(settings.get()), directory, settings, undefined, undefined,
-    ))
-
-    const result = await handler('settings.configure', {
-      role: 'host',
-      serverUrl: 'https://relay.example.test/',
-      email: 'host@example.com',
-      password: 'correct horse battery staple',
-    }, signal())
-
-    expect(result).toMatchObject({
-      ok: true,
-      value: {
-        status: 'authorized',
-        role: 'host',
-        account: 'host@example.com',
-        settings: { association: { method: 'account', account: 'host@example.com' } },
-      },
-    })
-    expect(settings.get()).toMatchObject({ role: 'host', serverUrl: 'https://relay.example.test' })
-    expect(settings.get()).not.toHaveProperty('deviceName')
-    expect(JSON.parse(String(calls[1]?.init?.body))).toMatchObject({ device: { name: hostname(), role: 'host' } })
-    expect(JSON.stringify(settings.get())).not.toContain('correct horse battery staple')
-
-    await expect(handler('settings.role.set', { role: 'client' }, signal())).resolves.toMatchObject({
-      ok: true,
-      value: {
-        config: { role: 'client' },
-        association: { method: 'owned_device', account: 'host@example.com' },
-        associations: {
-          host: { method: 'account', account: 'host@example.com' },
-          client: { method: 'owned_device', account: 'host@example.com' },
-        },
-      },
-    })
-    expect(calls).toHaveLength(3)
-    expect(calls[2]?.url).toBe('https://relay.example.test/api/v1/devices/register-owned-role')
-    expect(calls[2]?.init?.headers).toMatchObject({ Authorization: 'Bearer access-token-value' })
-    expect(JSON.parse(String(calls[2]?.init?.body))).toMatchObject({ device: { role: 'client' } })
-    const hostDirectory = serverStorageDirectory(directory, 'https://relay.example.test', 'host')
-    const clientDirectory = serverStorageDirectory(directory, 'https://relay.example.test', 'client')
-    await expect(readFile(join(hostDirectory, 'server-credentials.json'), 'utf8')).resolves.toContain('host@example.com')
-    await expect(readFile(join(clientDirectory, 'server-credentials.json'), 'utf8')).resolves.toContain('owned_device')
-    await expect(handler('settings.role.set', { role: 'host' }, signal())).resolves.toMatchObject({
-      ok: true,
-      value: { association: { account: 'host@example.com' } },
-    })
-    expect(calls).toHaveLength(3)
-    await expect(handler('settings.logout', {}, signal())).resolves.toMatchObject({
-      ok: true,
-      value: { config: { role: 'host' }, associations: {} },
-    })
-    await expect(readFile(join(hostDirectory, 'server-credentials.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
-    await expect(readFile(join(clientDirectory, 'server-credentials.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
-  })
-
-  it('authorizes a Client with its site account and persists only device credentials', async () => {
-    const directory = await temporaryDirectory()
-    const settings = settingsBinding({})
-    const calls: Array<{ url: string; init?: RequestInit }> = []
-    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const url = String(input)
-      calls.push({ url, init })
-      if (url.endsWith('/auth/login')) return json({
-        token: 'web-account-token-value',
-        expiresAt: Date.now() + 600_000,
-        account: 'client@example.com',
-        profile: {},
-        isAdmin: false,
-      })
-      if (url.endsWith('/devices/register')) return json(tokens())
-      throw new Error(`unexpected request: ${url}`)
-    }))
-    const handler = register(new PluginControlRuntime(
-      resolveConfig(settings.get()), directory, settings, undefined, undefined,
-    ))
-
-    const configured = await handler('settings.configure', {
-      role: 'client',
-      serverUrl: 'https://relay.example.test',
-      email: 'client@example.com',
-      password: 'correct horse battery staple',
-    }, signal())
-    expect(configured).toMatchObject({
-      ok: true,
-      value: {
-        status: 'authorized',
-        role: 'client',
-        account: 'client@example.com',
-        settings: { association: { method: 'account', account: 'client@example.com' } },
-      },
-    })
-    expect(JSON.parse(String(calls[1]?.init?.body))).toMatchObject({ device: { name: hostname(), role: 'client' } })
-    const clientDirectory = serverStorageDirectory(directory, 'https://relay.example.test', 'client')
-    const stored = await readFile(join(clientDirectory, 'server-credentials.json'), 'utf8')
-    expect(stored).toContain('client@example.com')
-    expect(stored).not.toContain('correct horse battery staple')
-    expect(stored).not.toContain('web-account-token-value')
-  })
-
-  it('authorizes a Host with a website-generated one-time registration code', async () => {
-    const directory = await temporaryDirectory()
-    const settings = settingsBinding({})
-    const calls: Array<{ url: string; init?: RequestInit }> = []
-    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      calls.push({ url: String(input), init })
-      return json(tokens())
-    }))
-    const handler = register(new PluginControlRuntime(
-      resolveConfig(settings.get()), directory, settings, undefined, undefined,
-    ))
-
-    const configured = await handler('settings.configure', {
-      role: 'host',
-      serverUrl: 'https://relay.example.test',
-      registrationCode: 'ABCD-EFGH',
-    }, signal())
-
-    expect(configured).toMatchObject({
-      ok: true,
-      value: {
-        status: 'authorized',
-        role: 'host',
-        settings: { association: { method: 'host_registration_code' } },
-      },
-    })
-    expect(calls[0]?.url).toBe('https://relay.example.test/api/v1/devices/register-with-code')
-    expect(JSON.parse(String(calls[0]?.init?.body))).toMatchObject({
-      code: 'ABCD-EFGH',
-      device: { name: hostname(), role: 'host' },
-    })
-
-    await expect(handler('settings.role.set', { role: 'client' }, signal())).resolves.toMatchObject({
-      ok: true,
-      value: {
-        config: { role: 'client' },
-        association: { method: 'owned_device' },
-      },
-    })
-    expect(calls[1]?.url).toBe('https://relay.example.test/api/v1/devices/register-owned-role')
-    expect(calls[1]?.init?.headers).toMatchObject({ Authorization: 'Bearer access-token-value' })
-    expect(JSON.parse(String(calls[1]?.init?.body))).toMatchObject({
-      device: { name: hostname(), role: 'client' },
-    })
-  })
-  it('surfaces startup failure in status and settings without disabling control plane', async () => {
-    const root = await temporaryDirectory()
-    const settings = settingsBinding({ serverUrl: 'https://relay.example.test' })
-    const control = new PluginControlRuntime(resolveConfig(settings.get()), root, settings, undefined, undefined)
-    const handler = register(control)
-
-    control.setStartupFailure(new IdentityInvalidError('device public and private keys do not match'))
-
-    const statusResult = await handler('status', {}, signal())
-    expect(statusResult).toMatchObject({
-      ok: true,
-      value: {
-        mode: 'local',
-        available: false,
-        controlUnavailable: false,
-        startupError: {
-          code: 'IDENTITY_INVALID',
-          message: 'device public and private keys do not match',
-        },
-      },
-    })
-
-    const settingsResult = await handler('settings.get', {}, signal())
-    expect(settingsResult).toMatchObject({
-      ok: true,
-      value: {
-        startupError: {
-          code: 'IDENTITY_INVALID',
-          message: 'device public and private keys do not match',
-        },
-      },
-    })
-  })
-
-  it('resets identity, validates role payload, and preserves startupError if restart still fails', async () => {
-    const root = await temporaryDirectory()
-    const serverUrl = 'https://relay.example.test'
-    const settings = settingsBinding({ serverUrl })
-    let shouldFailRestart = true
-    const switchServer = vi.fn(async () => {
-      if (shouldFailRestart) {
-        throw new IdentityInvalidError('device public and private keys do not match')
-      }
-      return {
-        client: undefined,
-        host: {
-          hostStatus: () => ({ configured: true, online: true, reconnecting: false, authorized: true, accountRequired: false }),
-          reconnectHost: vi.fn(),
-          clearHostAuthorization: vi.fn(),
-          authorizeHostAsOwned: vi.fn(),
-          authorizeHostWithAccount: vi.fn(),
-          authorizeHostWithCode: vi.fn(),
-        } satisfies HostAuthorizationControl,
-      }
-    })
-
-    const control = new PluginControlRuntime(resolveConfig(settings.get()), root, settings, undefined, undefined, switchServer)
-    const handler = register(control)
-    control.setStartupFailure(new IdentityInvalidError('device public and private keys do not match'))
-
-    await expect(handler('settings.identity.reset', { role: 'invalid-role' }, signal())).resolves.toMatchObject({
-      ok: false,
-      error: { details: { remoteCode: 'INVALID_MESSAGE' } },
-    })
-    expect(switchServer).not.toHaveBeenCalled()
-
-    await expect(handler('settings.identity.reset', { role: 'host' }, signal())).resolves.toMatchObject({
-      ok: false,
-      error: { details: { remoteCode: 'IDENTITY_INVALID' } },
-    })
-    const statusWhileBroken = await handler('status', {}, signal())
-    expect((statusWhileBroken as any).value?.startupError).toMatchObject({
-      code: 'IDENTITY_INVALID',
-      message: 'device public and private keys do not match',
-    })
-
-    shouldFailRestart = false
-    const result = await handler('settings.identity.reset', { role: 'all' }, signal())
-    expect(result).toMatchObject({ ok: true })
-    expect(switchServer).toHaveBeenCalledTimes(2)
-
-    const statusAfter = await handler('status', {}, signal())
-    expect((statusAfter as any).value?.startupError).toBeUndefined()
-  })
-
-  it('tolerates corrupt identity or credentials in settingsView without throwing or creating files', async () => {
-    const root = await temporaryDirectory()
-    const serverUrl = 'https://relay.example.test'
-    const settings = settingsBinding({ serverUrl })
-    const hostDir = serverStorageDirectory(root, serverUrl, 'host')
-    const clientDir = serverStorageDirectory(root, serverUrl, 'client')
-    await new IdentityStore({ directory: clientDir, role: 'client' }).loadOrCreate('Client')
-    const { writeFile, stat } = await import('node:fs/promises')
-    await writeFile(join(clientDir, 'device.key'), 'corrupted-key\n')
-    await new ServerCredentialStore(clientDir).save({
-      serverUrl,
-      deviceId: 'client-id',
-      authorizationMethod: 'owned_device',
-      accessToken: 'a'.repeat(24),
-      accessTokenExpiresAt: Date.now() + 60000,
-      refreshToken: 'r'.repeat(24),
-      refreshTokenExpiresAt: Date.now() + 600000,
-    })
-
-    const control = new PluginControlRuntime(resolveConfig(settings.get()), root, settings, undefined, undefined)
-    const handler = register(control)
-
-    const view = await handler('settings.get', {}, signal())
-    expect(view).toMatchObject({ ok: true, value: { deviceName: expect.any(String) } })
-    expect((view as any).value?.associations?.client).toBeUndefined()
-    await expect(stat(join(hostDir, 'device.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+  it('rejects unknown control endpoints', async () => {
+    const handler = register(new PluginControlRuntime(resolveConfig({}), undefined, undefined))
+    await expect(handler('settings.server.set', { serverUrl: 'https://relay.example.test' }, signal()))
+      .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'METHOD_NOT_ALLOWED' } } })
+    await expect(handler('settings.configure', {}, signal()))
+      .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'METHOD_NOT_ALLOWED' } } })
   })
 })
+
 function register(runtime: PluginControlRuntime) {
   let handler: ((endpoint: string, payload: unknown, signal: AbortSignal) => Promise<ControlResult<unknown>>) | undefined
   let channel: string | undefined
@@ -572,7 +321,7 @@ function register(runtime: PluginControlRuntime) {
         return async () => undefined
       },
     },
-  } satisfies HostConnectionHandle)
+  })
   expect(channel).toBe(CONTROL_RPC_PREFIX)
   if (handler === undefined) throw new Error('control handler was not registered')
   return handler
@@ -586,27 +335,58 @@ function settingsBinding(initial: Config): PluginSettingsBinding {
   }
 }
 
-function signal(): AbortSignal { return new AbortController().signal }
-
-function tokens(overrides: Partial<ReturnType<typeof baseTokens>> = {}) {
-  return { ...baseTokens(), ...overrides }
-}
-
-function baseTokens() {
+function hostStatus(overrides: Partial<HostRemoteStatus> = {}): HostRemoteStatus {
   return {
-    accessToken: 'access-token-value',
-    accessTokenExpiresAt: Date.now() + 600_000,
-    refreshToken: 'refresh-token-value',
-    refreshTokenExpiresAt: Date.now() + 86_400_000,
+    configured: true,
+    enabled: true,
+    online: true,
+    reconnecting: false,
+    authorized: true,
+    accountRequired: false,
+    connectedClients: [],
+    ...overrides,
   }
 }
 
-function json(value: unknown): Response {
-  return new Response(JSON.stringify(value), { status: 200, headers: { 'content-type': 'application/json' } })
+function hostStub(overrides: Partial<HostControl> = {}): HostControl {
+  return {
+    hostStatus: () => hostStatus(),
+    authorizeHostWithAccount: vi.fn(async () => ({ method: 'account' })),
+    reconnectHost: vi.fn(),
+    setHostControl: vi.fn(async () => undefined),
+    ...overrides,
+  }
 }
 
-async function temporaryDirectory(): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), 'dsh-remote-control-'))
-  directories.push(directory)
-  return directory
+function tailnetSnapshot(): TailnetSnapshot {
+  return {
+    enabled: true,
+    phase: 'ready',
+    dnsName: 'host.tailnet.example.test',
+    publicUrl: 'https://host.tailnet.example.test',
+    relayPort: 8080,
+    steps: {
+      tailscale: { ok: true, detail: 'connected' },
+      relay: { ok: true, detail: 'running' },
+      serve: { ok: true, detail: 'serving' },
+      authorize: { ok: true, detail: 'authorized' },
+    },
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  }
 }
+
+function tailnetStub(options: {
+  snapshot?: TailnetSnapshot
+  credentials?: { account: string; password: string }
+  updateCredentials?: TailnetControl['updateCredentials']
+} = {}): TailnetControl {
+  return {
+    snapshot: vi.fn(() => options.snapshot),
+    credentials: vi.fn(() => options.credentials),
+    updateCredentials: options.updateCredentials ?? vi.fn(async () => options.snapshot),
+    reportAuthorized: vi.fn(),
+    reportAuthorizeFailure: vi.fn(),
+  }
+}
+
+function signal(): AbortSignal { return new AbortController().signal }

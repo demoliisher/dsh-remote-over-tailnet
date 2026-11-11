@@ -15,9 +15,6 @@
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
-  "bin": {
-    "dsh-remote-over-tailnet": "./bin/dsh-remote-over-tailnet.js"
-  },
   "types": "./public.d.ts",
   "exports": {
     ".": {
@@ -32,7 +29,6 @@
     "./icon": "./icon.png"
   },
   "files": [
-    "bin",
     "dist",
     "!dist/**/*.map",
     "dsh-plugin.json",
@@ -69,7 +65,6 @@
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.5",
-    "qrcode": "^1.5.4",
     "zod": "^4.6.7",
     "ws": "^8.21.3",
     "@xterm/headless": "6.0.0",
@@ -143,7 +138,6 @@
     "@dsh-remote/crypto": "workspace:*",
     "@dsh-remote/protocol": "workspace:*",
     "@dsh-remote/webrtc": "workspace:*",
-    "@types/qrcode": "^1.5.5",
     "esbuild": "^0.25.0",
     "typescript": "^5.7.3",
     "vitest": "^2.1.8",

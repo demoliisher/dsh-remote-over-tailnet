@@ -538,7 +538,6 @@ describe('HostServerConnection', () => {
                 if (scenario === 'refresh-rejected')
                   throw new ServerApiError('AUTH_INVALID', 'refresh rejected', false, 401, 'credential_refresh')
               }),
-              clearAuthorization: vi.fn(async () => undefined),
             } as unknown as HostServerApi
             const logs = logger()
             const server = new HostServerConnection(
@@ -600,7 +599,6 @@ describe('HostServerConnection', () => {
                 expect(sockets).toHaveLength(1)
                 expect(server.isReconnecting()).toBe(false)
                 expect(api.refreshCredentials).toHaveBeenCalledTimes(scenario === 'refresh-rejected' ? 1 : 0)
-                expect(api.clearAuthorization).toHaveBeenCalledTimes(scenario.startsWith('revoked') ? 1 : 0)
                 if (scenario !== 'stopped')
                   expect(server.lastError()).toBe(
                     scenario.startsWith('replaced')
@@ -1263,8 +1261,8 @@ function config(): ResolvedConfig {
     terminal: { enabled: false },
     sidebar: { entry: 'standard' },
     loopback: { ports: [] },
+    tailnet: { enabled: true, servePort: 443 },
     enabled: true,
-    role: 'host',
     serverUrl: 'https://relay.example.test',
     deviceName: 'Host',
     forceRelay: true,
@@ -1403,7 +1401,6 @@ it('reconnects after temporary 1013 handshakes without spending another credenti
       baseUrl: 'https://relay.example.test',
       authenticate: vi.fn(async () => ({ accessToken })),
       refreshCredentials: vi.fn(async () => { accessToken = 'new-access-value' }),
-      clearAuthorization: vi.fn(),
     }
     const server = new HostServerConnection(
       { ...config(), reconnect: { enabled: true, initialDelayMs: 1, maxDelayMs: 1, jitter: 0 } },
@@ -1426,7 +1423,6 @@ it('reconnects after temporary 1013 handshakes without spending another credenti
       last.receive(createControlFrame('hello.ack', helloAck('recovered-after-startup')))
       await vi.waitFor(() => expect(server.isOnline()).toBe(true))
       expect(api.refreshCredentials).toHaveBeenCalledTimes(row.closes.filter(code => code === 4002).length)
-      expect(api.clearAuthorization).not.toHaveBeenCalled()
       expect(server.lastError()).toBeUndefined()
     } finally { await server.stop() }
   } })))

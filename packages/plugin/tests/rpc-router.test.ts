@@ -319,5 +319,5 @@ function createRouter(
   const bridge = Object.keys(overrides).length === 0 ? undefined : {
     closeAll: vi.fn(async () => undefined), ...overrides,
   } as unknown as HarnessRemoteBridge
-  return new RpcRouter(undefined, logger, fileViewer, bridge, capabilities, codex, undefined, undefined, workspaceTypes, pluginRoute)
+  return new RpcRouter(undefined, logger, fileViewer, bridge, capabilities, codex, undefined, workspaceTypes, pluginRoute)
 }

@@ -150,7 +150,7 @@ export async function detectTailnet(options: TailnetOptions = {}): Promise<Tailn
       tailscaleIPs: [],
       error: {
         code: 'TAILSCALE_NOT_INSTALLED',
-        message: '未找到 Tailscale 客户端。请先安装 Tailscale 并登录，或改用客户端模式连接已有服务器。',
+        message: '未找到 Tailscale 客户端。请先安装 Tailscale 并登录，否则本机中继无法通过 tailnet 提供服务。',
         actionUrl: 'https://tailscale.com/download',
       },
     }

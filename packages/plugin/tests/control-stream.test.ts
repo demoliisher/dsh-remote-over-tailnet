@@ -9,12 +9,12 @@ import {
   registerControlRoute,
   STATUS_STREAM_PATH,
   type ControlRouteHandler,
+  type HostConnectionHandleLike,
   type HostWebServerLike,
 } from '../src/control-route.js'
 import { ControlStatusStream } from '../src/control-stream.js'
-import type { HostAuthorizationControl, HostConnectionHandle } from '../src/client-runtime.js'
 import { resolveConfig } from '../src/config.js'
-import { PluginControlRuntime } from '../src/control-runtime.js'
+import { PluginControlRuntime, type HostControl } from '../src/control-runtime.js'
 
 const servers: Server[] = []
 
@@ -240,13 +240,7 @@ describe('loopback status event stream', () => {
   })
 
   it('streams the control runtime status and ends it with the control route', async () => {
-    const runtime = new PluginControlRuntime(
-      resolveConfig(),
-      '/unused',
-      undefined,
-      undefined,
-      hostControl(),
-    )
+    const runtime = new PluginControlRuntime(resolveConfig(), undefined, hostControl())
     const route = captureRoute()
     const dispose = runtime.register(connectionHandle(), route.webServer)
     const response = fakeResponse()
@@ -255,7 +249,7 @@ describe('loopback status event stream', () => {
 
     expect(response.statusCode).toBe(200)
     const head = response.chunks.join('')
-    expect(head).toContain('"mode":"local"')
+    expect(head).toContain('"hostAuthorizationAvailable":true')
     expect(head).toContain('"online":true')
 
     await dispose()
@@ -277,7 +271,7 @@ describe('loopback status event stream', () => {
 
   it('does not throw when a carrier has no web server or rpc handle', async () => {
     const dispose = registerControlRoute(
-      { rpc: {} } as unknown as HostConnectionHandle,
+      { rpc: {} } as unknown as HostConnectionHandleLike,
       async () => ({ ok: true, value: {} }),
     )
 
@@ -338,28 +332,28 @@ function fakeResponse(options: { failWrites?: boolean } = {}): FakeResponse {
   }
 }
 
-function hostControl(): HostAuthorizationControl {
+function hostControl(): HostControl {
   return {
     hostStatus: () => ({
       configured: true,
+      enabled: true,
       online: true,
       reconnecting: false,
       authorized: true,
       accountRequired: false,
+      connectedClients: [],
     }),
     reconnectHost: () => undefined,
-    clearHostAuthorization: async () => undefined,
-    authorizeHostAsOwned: async () => undefined,
+    setHostControl: async () => undefined,
     authorizeHostWithAccount: async () => undefined,
-    authorizeHostWithCode: async () => undefined,
   }
 }
 
-function connectionHandle(rejection?: number): HostConnectionHandle {
+function connectionHandle(rejection?: number): HostConnectionHandleLike {
   return {
     requestRejection: () => rejection,
     rpc: { handle: () => async () => undefined },
-  } as unknown as HostConnectionHandle
+  } as unknown as HostConnectionHandleLike
 }
 
 /** Stands in for the Host Web server prefix table. */
