@@ -43,7 +43,7 @@ $env:DSH_REMOTE_UPSTREAM = 'D:\path\to\ds-harness-remote-copy'
 pnpm build:server
 ```
 
-脚本读取上游副本的 `apps/server/dist/main.js` 与 `public/`，输出：
+脚本读取上游副本的 `apps/server/dist/main.js`，输出：
 
 - `packages/plugin/server/dist/main.cjs`（被 gitignore）
 - `packages/plugin/server/version.json`（入库，记录插件版本、上游版本、构建时间与 sha256）

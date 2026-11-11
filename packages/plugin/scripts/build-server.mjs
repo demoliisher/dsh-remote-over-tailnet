@@ -4,11 +4,11 @@
  * 上游 `apps/server/dist/main.js` 是 ESM，产物改写为 CommonJS（扩展名必须为
  * `.cjs`）：仓库根 package.json 声明了 `"type": "module"`，`.js` 会被当作 ESM
  * 解析，导致 `require is not defined`。`import.meta.url` 通过 banner 注入的
- * `__importMetaUrl` 替代，server 用它定位 `<outdir>/public/`。
+ * `__importMetaUrl` 替代，避免 CommonJS 产物引用 ESM 专有语法。
  */
 import { execFileSync, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -22,18 +22,11 @@ const repoRoot = resolve(pluginRoot, '..', '..')
 
 const upstreamRoot = resolve(process.env.DSH_REMOTE_UPSTREAM ?? 'D:/Projects/dsh-exp/ds-harness-remote')
 const upstreamMain = join(upstreamRoot, 'apps', 'server', 'dist', 'main.js')
-const upstreamPublic = join(upstreamRoot, 'apps', 'server', 'dist', 'public')
 const protocolEntry = join(repoRoot, 'packages', 'protocol', 'dist', 'index.js')
 
 if (!existsSync(upstreamMain)) {
   throw new Error(
     `未找到上游中继 server 的构建产物：${upstreamMain}。` +
-      '请先在上游克隆里构建 apps/server（运行 pnpm --filter @dsh-remote/server build）。'
-  )
-}
-if (!existsSync(upstreamPublic)) {
-  throw new Error(
-    `未找到上游中继 server 的静态资源目录：${upstreamPublic}。` +
       '请先在上游克隆里构建 apps/server（运行 pnpm --filter @dsh-remote/server build）。'
   )
 }
@@ -80,8 +73,6 @@ await build({
   banner: { js: "const __importMetaUrl = require('node:url').pathToFileURL(__filename).href;" },
   logLevel: 'warning',
 })
-
-cpSync(upstreamPublic, join(distDir, 'public'), { recursive: true })
 
 const serverBytes = readFileSync(outfile)
 const serverSha256 = createHash('sha256').update(serverBytes).digest('hex')
