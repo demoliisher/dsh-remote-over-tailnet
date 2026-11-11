@@ -431,7 +431,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
           React.createElement('footer', { className: 'dshRemotePageFooter' },
             React.createElement('a', {
               className: 'dshRemoteStarLink',
-              href: 'https://github.com/liguobao/ds-harness-remote',
+              href: 'https://github.com/demoliisher/dsh-remote-over-tailnet',
               target: '_blank',
               rel: 'noreferrer',
             }, t('starProject')))))))
