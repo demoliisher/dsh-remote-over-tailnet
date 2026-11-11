@@ -25,6 +25,7 @@ import type { PluginUpdateSnapshot } from './update-check.js'
 import { codexBinaryCandidates } from './codex/domain.js'
 import { cursorBinaryCandidates } from './acp/gateway.js'
 import { defaultCheckExecutable, installOrConfigureBackend, isBuiltinAcpBackend } from './acp/backend-installer.js'
+import type { TailnetControl } from './tailnet/orchestrator.js'
 
 export interface PluginSettingsView {
   config: Config
@@ -105,6 +106,8 @@ export class PluginControlRuntime {
     /** Update-check snapshots merged into every `status` result; absent when the plugin is disabled. */
     private readonly updates?: { snapshot(): PluginUpdateSnapshot | undefined },
     private readonly useDefaultStorage = false,
+    /** 阶段一的本地中继与 Tailscale 组网编排；未启用时为 undefined。 */
+    private readonly tailnet?: TailnetControl,
   ) {}
 
   register(connection: HostConnectionHandle, webServer?: HostWebServerLike): () => Promise<void> {
@@ -174,6 +177,13 @@ export class PluginControlRuntime {
         this.host.reconnectHost()
         return withUpdate(ok(this.hostOnlyStatus()), this.updates?.snapshot())
       }
+      if (endpoint === 'tailnet.status') return ok(this.tailnet?.snapshot() ?? null)
+      if (endpoint === 'tailnet.credentials') {
+        if (this.tailnet === undefined) throw new ClientModeError('METHOD_NOT_ALLOWED', 'Tailscale 组网未启用。')
+        const credentials = this.tailnet.credentials()
+        if (credentials === undefined) throw new ClientModeError('CREDENTIALS_UNAVAILABLE', '中继账号尚未生成，请等待 Tailscale 与中继就绪。')
+        return ok(credentials)
+      }
       if (endpoint === 'status') {
         if (this.startupFailure !== undefined) {
           const startupError = safeStartupError(this.startupFailure)
@@ -186,14 +196,14 @@ export class PluginControlRuntime {
             startupError,
             hostAuthorizationAvailable: false,
           }
-          return withUpdate(ok(failureStatus), this.updates?.snapshot())
+          return withUpdate(this.withTailnet(ok(failureStatus)), this.updates?.snapshot())
         }
         // Both mode paths merge the update snapshot here, so the SSE stream,
         // polling, and the unary call always observe the same payload shape.
         const base = this.client !== undefined
           ? await this.client.handleControl(endpoint, payload, signal)
           : ok(this.hostOnlyStatus())
-        return withUpdate(base, this.updates?.snapshot())
+        return withUpdate(this.withTailnet(base), this.updates?.snapshot())
       }
       if (this.client !== undefined) return this.client.handleControl(endpoint, payload, signal)
 
@@ -666,12 +676,24 @@ export class PluginControlRuntime {
     }
   }
 
+  /**
+   * Attach the local Tailscale orchestration snapshot to any status-shaped
+   * result, including Client-mode status where the host-only shape is bypassed.
+   */
+  private withTailnet(result: ControlResult<unknown>): ControlResult<unknown> {
+    const tailnet = this.tailnet?.snapshot()
+    if (tailnet === undefined || !result.ok || !isRecord(result.value)) return result
+    return ok({ ...result.value, tailnet })
+  }
+
   private hostOnlyStatus(): Record<string, unknown> {
+    const tailnet = this.tailnet?.snapshot()
     return {
       mode: 'local',
       available: false,
       deviceName: hostname(),
       hostAuthorizationAvailable: this.host !== undefined,
+      ...(tailnet === undefined ? {} : { tailnet }),
       ...(this.host === undefined ? {} : { host: this.host.hostStatus() }),
     }
   }
@@ -708,6 +730,11 @@ function editableConfig(config: ResolvedConfig): Config {
     sidebar: config.sidebar,
     hostControl: config.hostControl ?? { enabled: true },
     loopback: config.loopback,
+    tailnet: {
+      enabled: config.tailnet.enabled,
+      ...(config.tailnet.dataDirectory === undefined ? {} : { dataDirectory: config.tailnet.dataDirectory }),
+      servePort: config.tailnet.servePort,
+    },
     forceRelay: config.forceRelay,
     logLevel: config.logLevel,
     reconnect: config.reconnect.enabled

@@ -3,7 +3,7 @@ import type { Volatile, VolatileSnapshot } from '@deepseek-ai/cordis'
 import s from '@deepseek-ai/schemastery'
 import { z } from 'zod'
 
-export const DEFAULT_REMOTE_SERVER_URL = 'https://dsh.r2049.cn'
+export const DEFAULT_REMOTE_SERVER_URL = 'http://127.0.0.1:8080'
 
 export interface Config {
   enabled?: boolean
@@ -16,6 +16,17 @@ export interface Config {
   sidebar?: { entry?: 'standard' | 'compact' }
   hostControl?: { enabled?: boolean }
   loopback?: { ports?: number[] }
+  /**
+   * 本地中继与 Tailscale 组网编排（阶段一：复用系统已安装的 Tailscale）。
+   * 仅当 serverUrl 是本机 http 地址时才启用，见 `tailnetRelayPort`。
+   */
+  tailnet?: {
+    enabled?: boolean
+    /** 中继状态、日志与账号密码所在目录；默认在插件数据目录下的 tailnet 子目录。 */
+    dataDirectory?: string
+    /** tailscale serve 对外使用的 HTTPS 端口，默认 443。 */
+    servePort?: number
+  }
   forceRelay?: boolean
   /**
    * When a known peer device presents a NEW identity key after re-authorizing with the
@@ -85,6 +96,11 @@ export interface ResolvedConfig {
   sidebar: { entry: 'standard' | 'compact' }
   hostControl?: { enabled: boolean }
   loopback: { ports: number[] }
+  tailnet: {
+    enabled: boolean
+    dataDirectory?: string
+    servePort: number
+  }
   codex: ResolvedCodexConfig
   cursor: ResolvedCursorConfig
   acp?: ResolvedAcpConfig
@@ -114,6 +130,7 @@ export const entryConfigSchema = s.object({
   sidebar: s.object({ entry: s.union(['standard', 'compact'] as const) }),
   hostControl: s.object({ enabled: s.boolean() }),
   loopback: s.object({ ports: s.array(s.number()) }),
+  tailnet: s.object({ enabled: s.boolean(), dataDirectory: s.string(), servePort: s.number() }),
   forceRelay: s.boolean(),
   rotatePinnedPeerKey: s.boolean(),
   logLevel: s.union(['debug', 'info', 'warn', 'error'] as const),
@@ -170,6 +187,11 @@ const configSchema = z.object({
   sidebar: z.object({ entry: z.enum(['standard', 'compact']).optional() }).strict().optional(),
   hostControl: z.object({ enabled: z.boolean().optional() }).strict().optional(),
   loopback: z.object({ ports: z.array(z.number().int().min(1024).max(65535)).max(16).optional() }).strict().optional(),
+  tailnet: z.object({
+    enabled: z.boolean().optional(),
+    dataDirectory: z.string().trim().min(1).max(4096).optional(),
+    servePort: z.number().int().min(1).max(65535).optional(),
+  }).strict().optional(),
   forceRelay: z.boolean().optional(),
   rotatePinnedPeerKey: z.boolean().optional(),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).optional(),
@@ -214,6 +236,11 @@ export function resolveConfig(input: ConfigInput = {}, env: NodeJS.ProcessEnv = 
     remoteTools: { enabled: parsed.remoteTools?.enabled ?? true },
     sidebar: { entry: parsed.sidebar?.entry === 'compact' ? 'compact' : 'standard' },
     loopback: { ports: [...new Set(parsed.loopback?.ports ?? [])] },
+    tailnet: {
+      enabled: parsed.tailnet?.enabled ?? true,
+      ...(parsed.tailnet?.dataDirectory === undefined ? {} : { dataDirectory: parsed.tailnet.dataDirectory }),
+      servePort: parsed.tailnet?.servePort ?? 443,
+    },
     forceRelay: parsed.forceRelay ?? false,
     rotatePinnedPeerKey: parsed.rotatePinnedPeerKey ?? false,
     logLevel: parsed.logLevel ?? 'info',

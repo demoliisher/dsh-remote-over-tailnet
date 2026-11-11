@@ -3,5 +3,5 @@ https://github.com/liguobao/ds-harness-remote
 Copyright (c) liguobao
 Licensed under the MIT License（原文见 LICENSE）。
 
-衍生部分：dsh-remote-over-tailnet
+衍生部分：dsh-remote-over-tailscale
 本项目与 Tailscale Inc.、DeepSeek 均无关联，也未获其背书。

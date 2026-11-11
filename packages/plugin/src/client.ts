@@ -50,7 +50,7 @@ declare const DSH_REMOTE_CLIENT_MODULE_ID: string | undefined
 
 const clientModuleId = typeof DSH_REMOTE_CLIENT_MODULE_ID === 'string'
   ? DSH_REMOTE_CLIENT_MODULE_ID
-  : 'ds-harness-remote'
+  : 'dsh-remote-over-tailscale'
 const controlRouteBackoffStepsMs = [1_000, 2_000, 5_000, 10_000, 30_000] as const
 
 class ControlRouteUnavailableError extends Error {
@@ -104,7 +104,7 @@ window.__ModuleLoader__.load({
     // section, so this jumps straight to the Remote card instead of requiring a
     // scroll through the whole document.
     function RemotePluginSettingsAction(props: { t: Translate; subject?: unknown }): unknown {
-      if (pluginSubjectPackageName(props.subject) !== 'ds-harness-remote') return null
+      if (pluginSubjectPackageName(props.subject) !== 'dsh-remote-over-tailscale') return null
       const label = props.t('openPluginSettings')
       return React.createElement('button', {
         type: 'button',
@@ -629,10 +629,10 @@ window.__ModuleLoader__.load({
       // reads as an official plugin) — a bundle's configuration belongs in the
       // two config slots below instead.
       // Row-scoped: keyed `<package>#<row id>` from the bundle's own patch
-      // (`cordis.patch.yml` row `ds-harness-remote`).
+      // (`cordis.patch.yml` row `dsh-remote-over-tailscale`).
       ctx.slots.inject('plugins.row.config', () => ctx.slots.register({
         name: 'plugins.row.config',
-        key: 'ds-harness-remote#ds-harness-remote',
+        key: 'dsh-remote-over-tailscale#dsh-remote-over-tailscale',
         locale: localeNamespace,
         inject: () => ({
           control,
@@ -646,7 +646,7 @@ window.__ModuleLoader__.load({
       // package name.
       ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
         name: 'plugins.bundle.config',
-        key: 'ds-harness-remote',
+        key: 'dsh-remote-over-tailscale',
         locale: localeNamespace,
         inject: () => ({
           control,

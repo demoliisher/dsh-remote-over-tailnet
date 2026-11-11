@@ -13,6 +13,42 @@ export interface FileViewerClientServiceLike {
 
 export type RemoteTransportPreference = 'lan' | 'p2p' | 'turn' | 'relay'
 
+/** 面板上单个编排步骤的状态；ok 为 null 表示尚未执行。 */
+export interface TailnetStepView {
+  ok: boolean | null
+  detail: string
+}
+
+/** Host 侧 Tailscale 组网与内置中继的状态快照（不含密码）。 */
+export interface TailnetView {
+  enabled: boolean
+  phase: 'disabled' | 'probing' | 'starting' | 'ready' | 'error'
+  dnsName?: string
+  publicUrl?: string
+  relayPort?: number
+  relayPid?: number
+  serveTarget?: string
+  serveChanged?: boolean
+  httpsCertificateReady?: boolean
+  tailscaleBinary?: string
+  account?: string
+  logPath?: string
+  steps: {
+    tailscale: TailnetStepView
+    relay: TailnetStepView
+    serve: TailnetStepView
+    authorize: TailnetStepView
+  }
+  error?: { code: string; message: string; actionUrl?: string }
+  updatedAt: string
+}
+
+/** dsh-go 手动填写用的中继账号；按需单独请求，不随状态推送。 */
+export interface TailnetCredentialsView {
+  account: string
+  password: string
+}
+
 export interface RemoteStatus {
   mode: 'local' | 'remote'
   backend?: 'harness' | 'codex' | 'cursor' | 'antigravity' | 'pi' | 'opencode' | 'claude' | 'hermes'
@@ -59,6 +95,7 @@ export interface RemoteStatus {
     latestVersion: string
     checkedAt: number
   }
+  tailnet?: TailnetView
   hostAuthorizationAvailable: boolean
   host?: {
     deviceId?: string
@@ -202,6 +239,7 @@ interface PluginSettings {
   terminal?: { enabled?: boolean }
   hostControl?: { enabled?: boolean }
   loopback?: { ports?: number[] }
+  tailnet?: { enabled?: boolean; dataDirectory?: string; servePort?: number }
   remoteTools?: { enabled?: boolean }
   forceRelay?: boolean
   logLevel?: 'debug' | 'info' | 'warn' | 'error'

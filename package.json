@@ -1,7 +1,7 @@
 {
-  "name": "dsh-remote-over-tailnet",
+  "name": "dsh-remote-over-tailscale",
   "version": "0.6.4",
-  "description": "Tailnet-native remote access host plugin for DeepSeek Harness (fork of ds-harness-remote).",
+  "description": "Tailscale-based remote access host plugin for DeepSeek Harness (fork of ds-harness-remote).",
   "keywords": [
     "deepseek",
     "deepseek-harness",
@@ -16,7 +16,7 @@
   "type": "module",
   "main": "./index.js",
   "bin": {
-    "dsh-remote-over-tailnet": "./packages/plugin/bin/ds-harness-remote.js"
+    "dsh-remote-over-tailscale": "./packages/plugin/bin/dsh-remote-over-tailscale.js"
   },
   "types": "./packages/plugin/public.d.ts",
   "exports": {
@@ -38,10 +38,12 @@
     "packages/plugin/bin/ds-harness-remote.js",
     "packages/plugin/public.d.ts",
     "packages/plugin/LICENSE",
+    "packages/plugin/server/",
     "dsh-plugin.json",
     "cordis.patch.yml",
     "locale/",
     "README.md",
+    "NOTICE",
     "package.json",
     "icon.png"
   ],
@@ -65,6 +67,10 @@
     }
   },
   "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "build": "pnpm -r build",
+    "build:server": "node packages/plugin/scripts/build-server.mjs"
+  },
   "pnpm": {
     "overrides": {
       "@xmldom/xmldom@0.8": "^0.8.15",
@@ -144,6 +150,7 @@
     "@deepseek-ai/dsh-session": "0.2.2-rc.1",
     "@deepseek-ai/dsh-settings": "0.2.2-rc.1",
     "@types/node": "^24.9.0",
+    "esbuild": "^0.28.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
     "vitest": "^2.1.8",

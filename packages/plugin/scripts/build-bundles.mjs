@@ -1,6 +1,6 @@
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { build } from 'esbuild'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -62,10 +62,10 @@ await buildBundle({
   },
 })
 
-for (const [moduleId, outfile] of [
-  ['ds-harness-remote', 'client.js'],
-  ['ds-harness-remote', 'client.github.js'],
-]) {
+// 浏览器端模块 id 必须与安装后的插件包名一致，否则 __ModuleLoader__ 会加载成功但不注册
+// 对应条目，DSH Web 直接报插件加载失败。包名是唯一事实来源。
+const moduleId = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')).name
+for (const outfile of ['client.js', 'client.github.js']) {
   await buildBundle({
     entryPoints: [join(root, 'src/client.ts')],
     bundle: true,

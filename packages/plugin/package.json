@@ -1,7 +1,7 @@
 {
-  "name": "dsh-remote-over-tailnet",
+  "name": "dsh-remote-over-tailscale",
   "version": "0.6.4",
-  "description": "P2P-based, end-to-end encrypted remote access to DeepSeek Harness, CodeX, Claude Code, Pi, and other workspaces from web and mobile clients.",
+  "description": "Tailscale-based, end-to-end encrypted remote access to DeepSeek Harness workspaces from mobile clients (fork of ds-harness-remote).",
   "keywords": [
     "deepseek",
     "deepseek-harness",
@@ -16,7 +16,7 @@
   "type": "module",
   "main": "./dist/index.js",
   "bin": {
-    "ds-harness-remote": "./bin/ds-harness-remote.js"
+    "dsh-remote-over-tailscale": "./bin/dsh-remote-over-tailscale.js"
   },
   "types": "./public.d.ts",
   "exports": {

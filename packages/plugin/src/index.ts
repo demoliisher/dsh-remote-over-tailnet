@@ -1,3 +1,5 @@
+import { basename, dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import * as DshConnection from '@deepseek-ai/dsh-client-connection'
 import type { Context } from '@deepseek-ai/cordis'
 // Type-only: pulls the `ctx.settings` Context merge and the rc.1 forms type.
@@ -34,6 +36,8 @@ import { createPluginRouteDispatcher, type PluginRouteConnectionLike } from './p
 import { installRemoteDiscoveryTools } from './remote-tools.js'
 import { runHmrSafe, type HmrContextLike } from './hmr-safe-settings.js'
 import { PluginUpdateChecker } from './update-check.js'
+import { TailnetOrchestrator } from './tailnet/orchestrator.js'
+import { PLUGIN_VERSION } from './version.js'
 import {
   createOwnerPeerFactory,
   ownerPeerConstructor,
@@ -49,7 +53,7 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-export const name = 'ds-harness-remote'
+export const name = 'dsh-remote-over-tailscale'
 export { Config }
 
 // The unscoped dsh-remote package belongs to another publisher. A bare name
@@ -60,9 +64,18 @@ const legacyLoaderModuleNames = new Set(['@dsh-remote/plugin'])
 const pluginSettingsNamespace = 'ds-harness-remote'
 
 /** Fallback entry id when the Loader cannot locate this plugin's entry. */
-const DEFAULT_ENTRY_ID = 'ds-harness-remote'
+const DEFAULT_ENTRY_ID = 'dsh-remote-over-tailscale'
 /** Root include entry id prefixing every profile row's Loader path id. */
 const INCLUDE_ENTRY_PREFIX = 'include:'
+
+/**
+ * 插件包根目录。构建产物是 `<包>/dist/index.js`，包根在上一级；从源码直接运行时
+ * 模块位于 `<包>/src/`，包根在上两级。`server/` 产物目录挂在包根下。
+ */
+const PACKAGE_ROOT = (() => {
+  const here = dirname(fileURLToPath(import.meta.url))
+  return basename(here) === 'dist' ? resolve(here, '..') : resolve(here, '..', '..')
+})()
 
 /**
  * ≤0.1.6 settings registry seam (removed by DSH 0.1.7-rc.1, DSH-0.1.7-RC1-04).
@@ -311,6 +324,15 @@ async function activate(
 
     return { runtime, clientRuntime }
   }
+  const tailnet = initialStorageError === undefined
+    ? new TailnetOrchestrator({
+        config,
+        logger,
+        defaultDataDirectory: () => join(defaultIdentityDirectory, 'tailnet'),
+        packageRoot: PACKAGE_ROOT,
+        pluginVersion: PLUGIN_VERSION,
+      })
+    : undefined
   let runtime: HostPluginRuntime | undefined
   let clientRuntime: ClientModeRuntime | undefined
   let hostServiceProvided = false
@@ -359,6 +381,7 @@ async function activate(
       if (closed) throw new Error('Remote plugin is closed')
       defaultIdentityDirectory = await prepareDefaultIdentityDirectory()
       controlRuntime?.setIdentityDirectory(defaultIdentityDirectory)
+      await tailnet?.restart(next)
       const fresh = createRuntimes(next)
       try {
         await fresh.runtime.start()
@@ -394,6 +417,7 @@ async function activate(
         replaceServer,
         updateChecker,
         true,
+        tailnet,
       )
   if (initialStorageError !== undefined) {
     controlRuntime?.setStartupFailure(initialStorageError, { storageAvailable: false })
@@ -413,7 +437,9 @@ async function activate(
     } else {
       try {
         startup = (async () => {
+          await tailnet?.start()
           await runtime!.start()
+          await authorizeTailnetHost(tailnet, runtime!)
           if (clientRuntime !== undefined) {
             await clientRuntime.start()
             clientActive = true
@@ -442,11 +468,40 @@ async function activate(
       updateChecker.stop()
       await replacement?.catch(() => undefined)
       await disposeControl?.()
+      await tailnet?.stop()
       await clientRuntime?.close()
       await runtime?.close()
     }
   }, 'ds-harness-remote lifecycle')
   if (config.remoteTools?.enabled) installRemoteDiscoveryTools(ctx, () => closed || !clientActive ? undefined : clientRuntime)
+}
+
+/**
+ * 中继就绪后用面板展示的账号密码完成 Host 设备授权。
+ *
+ * 每次都重新登录并注册设备：中继的 state.json 可能被重建或密码轮换，本地旧令牌会失效，
+ * 幂等重新注册可覆盖过期凭据；失败只写面板，交给 Host 自己的重连与手动登录兜底。
+ */
+async function authorizeTailnetHost(
+  tailnet: TailnetOrchestrator | undefined,
+  runtime: HostPluginRuntime,
+): Promise<void> {
+  if (tailnet === undefined) return
+  if (!tailnet.relayReady()) {
+    tailnet.reportAuthorizeSkipped('本地中继未就绪，跳过自动授权')
+    return
+  }
+  const credentials = tailnet.credentials()
+  if (credentials === undefined) {
+    tailnet.reportAuthorizeSkipped('尚未生成中继账号')
+    return
+  }
+  try {
+    await runtime.authorizeHostWithAccount(credentials.account, credentials.password)
+    tailnet.reportAuthorized()
+  } catch (error) {
+    tailnet.reportAuthorizeFailure(error)
+  }
 }
 
 /**

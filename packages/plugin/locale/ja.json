@@ -1,7 +1,7 @@
 {
   "meta": {
-    "title": "DS Harness Remote",
-    "description": "P2P とエンドツーエンド暗号化で、ブラウザーやモバイル端末から DeepSeek Harness、CodeX、Claude Code、Pi などのワークスペースにリモート接続します。",
+    "title": "DSH Remote over Tailscale",
+    "description": "Tailscale 経由でスマートフォンからローカルの DeepSeek Harness セッションに接続します。逐次ストリーミングに対応し、公開ゲートウェイは不要です。",
     "detail": "locale/README.ja.md"
   }
 }
