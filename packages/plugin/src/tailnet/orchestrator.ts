@@ -175,7 +175,7 @@ export class TailnetOrchestrator implements TailnetControl {
       })
       this.state.relayPid = this.relay.pid
       this.state.logPath = relayLogPath(this.dataDirectory())
-      this.state.steps.relay = { ok: true, detail: '中继运行在 127.0.0.1:' + String(relayPort) + '（进程 ' + String(this.relay.pid) + '）' }
+      this.state.steps.relay = { ok: true, detail: '中继运行在 127.0.0.1:' + String(relayPort) }
       this.state.phase = 'ready'
       this.publish()
       logger.info('relay credentials updated', { account: saved.account, relayPort })
@@ -256,7 +256,7 @@ export class TailnetOrchestrator implements TailnetControl {
       })
       this.state.relayPid = this.relay.pid
       this.state.logPath = relayLogPath(this.dataDirectory())
-      this.state.steps.relay = { ok: true, detail: '中继运行在 127.0.0.1:' + String(relayPort) + '（进程 ' + String(this.relay.pid) + '）' }
+      this.state.steps.relay = { ok: true, detail: '中继运行在 127.0.0.1:' + String(relayPort) }
       this.publish()
 
       this.state.steps.serve = { ok: null, detail: '正在配置 tailscale serve' }

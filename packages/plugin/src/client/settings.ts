@@ -297,12 +297,9 @@ export function createRemotePluginOptions(React: ClientReact) {
             className: 'dshRemoteDiscard',
             disabled: tailnetBusy,
             onClick: () => void refreshTailnet(),
-          }, t(tailnetBusy ? 'tailnetPending' : 'tailnetRefresh')),
-          tailnetView.logPath === undefined
-            ? null
-            : React.createElement('p', null, t('tailnetLogPath') + '：' + tailnetView.logPath)))
+          }, t(tailnetBusy ? 'tailnetPending' : 'tailnetRefresh'))))
 
-    const developmentSetting = React.createElement('section', { className: 'dshRemoteDevelopmentSettings' },
+    const developmentSetting = React.createElement(React.Fragment, null,
       React.createElement('div', { className: 'dshRemoteAuthorizationSetting' },
         React.createElement('div', null,
           React.createElement('strong', null, t('debugLogging')),
@@ -352,9 +349,7 @@ export function createRemotePluginOptions(React: ClientReact) {
         ? t('online')
         : host.accountRequired
           ? t('accountRequired')
-          : host.authorized
-            ? t('authorized')
-            : t('offline')
+          : t('offline')
     const startupErrorBanner = settingsView?.startupError !== undefined
       ? React.createElement('p', { className: 'dshRemoteError', role: 'alert' },
         startupErrorMessage(settingsView.startupError, t))
@@ -362,6 +357,7 @@ export function createRemotePluginOptions(React: ClientReact) {
 
     if (props.view === 'summary') return React.createElement('span', null, t('pluginDescription'))
 
+    const logPath = tailnetView?.logPath
     const settingsBody = !loaded
       ? React.createElement('p', { className: 'dshRemoteSettingsState' }, error ?? t('loadingSettings'))
       : React.createElement('div', { className: 'dshRemoteSettings' },
@@ -373,13 +369,10 @@ export function createRemotePluginOptions(React: ClientReact) {
           React.createElement('div', null,
             React.createElement('span', null, t('deviceId')),
             React.createElement('code', null, hostDeviceId || '—'))),
-        tailnetSetting,
-        developmentSetting,
-        sidebarEntrySetting,
         React.createElement('div', { className: 'dshRemoteAuthorizationSetting' },
           React.createElement('div', null,
             React.createElement('strong', null, t('allowControlCurrentDevice')),
-            React.createElement('p', null, t('thisMachineHost'))),
+            React.createElement('p', null, t('allowControlHint'))),
           status?.hostAuthorizationAvailable
             ? React.createElement('input', {
               type: 'checkbox', role: 'switch', disabled: busy,
@@ -417,6 +410,21 @@ export function createRemotePluginOptions(React: ClientReact) {
           ? null
           : React.createElement('p', { className: 'dshRemoteConnectionIssue', role: 'status' },
             connectionErrorMessage(host.error, t)),
+        tailnetSetting,
+        React.createElement('section', { className: 'dshRemoteSettingsGroup' },
+          React.createElement('strong', { className: 'dshRemoteGroupTitle' }, t('diagnosticsTitle')),
+          developmentSetting,
+          sidebarEntrySetting,
+          logPath === undefined
+            ? null
+            : React.createElement('div', { className: 'dshRemoteTailnetField' },
+              React.createElement('span', null, t('tailnetLogPath')),
+              React.createElement('code', null, logPath),
+              React.createElement('button', {
+                type: 'button',
+                className: 'dshRemoteDiscard',
+                onClick: () => void copyTailnet(logPath, 'logPath'),
+              }, t(tailnetCopied === 'logPath' ? 'tailnetCopied' : 'tailnetCopy')))),
         !writable ? React.createElement('p', { className: 'dshRemoteError' }, t('readOnly')) : null,
         React.createElement('div', { className: 'dshRemoteSettingsFooter' },
           React.createElement('p', {

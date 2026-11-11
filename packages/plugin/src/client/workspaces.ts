@@ -143,7 +143,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
           if (cancelled || credentials === null) return
           setRelayCredentials(credentials)
         })
-        .catch(() => undefined)
+        .catch(reason => setError(messageOf(reason, t)))
       return () => { cancelled = true }
     }, [open, props.control])
 
@@ -260,6 +260,13 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     const relayPhaseLabel = tailnet === undefined || tailnet === null
       ? t('tailnetPhaseDisabled')
       : t(tailnetPhaseKeys[tailnet.phase])
+    const relayPhaseClass = tailnet === undefined || tailnet === null
+      ? ''
+      : tailnet.phase === 'ready'
+        ? ' isReady'
+        : tailnet.phase === 'error'
+          ? ' isError'
+          : ''
     const relayAddressBar = serviceAddress === undefined ? null : React.createElement('p', { className: 'dshRemoteRelayAddress' },
       React.createElement('span', { className: 'dshRemoteRelayAddressLabel' }, t('tailnetServerAddress')),
       React.createElement('a', { href: serviceAddress, target: '_blank', rel: 'noreferrer' }, serviceAddress),
@@ -274,12 +281,19 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
       'aria-label': t('tailnetAccessTitle'),
     },
       React.createElement('div', { className: 'dshRemoteRelayAccessHeading' },
-        React.createElement('strong', null, t('tailnetAccessTitle')),
+        React.createElement('div', { className: 'dshRemoteSectionTitle' },
+          React.createElement('strong', null, t('tailnetAccessTitle')),
+          React.createElement('span', {
+            className: 'dshRemoteStatusChip' + relayPhaseClass,
+            'aria-label': t('tailnetStatus'),
+          }, relayPhaseLabel)),
         React.createElement('p', null, t('tailnetAccessHint'))),
       relayAddressBar,
-      React.createElement('p', { className: 'dshRemoteRelayStatus' },
-        React.createElement('strong', null, t('tailnetTitle')),
-        React.createElement('span', null, relayPhaseLabel)),
+      tailnet?.error === undefined ? null : React.createElement('p', { className: 'dshRemoteError', role: 'alert' },
+        tailnet.error.message,
+        tailnet.error.actionUrl === undefined ? null : React.createElement('a', {
+          href: tailnet.error.actionUrl, target: '_blank', rel: 'noreferrer',
+        }, t('openInBrowser'))),
       React.createElement('div', { className: 'dshRemoteRelayFields' },
         React.createElement('label', null, t('tailnetAccount'),
           React.createElement('input', {
@@ -288,31 +302,33 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
             autoComplete: 'username',
             onChange: (event: Event) => setRelayAccountDraft((event.target as HTMLInputElement).value),
           })),
-        React.createElement('label', null, t('tailnetPassword'),
-          React.createElement('div', { className: 'dshRemoteRelayPasswordRow' },
-            React.createElement('input', {
-              type: relaySecretVisible ? 'text' : 'password',
-              value: relayPasswordDraft,
-              autoComplete: 'current-password',
-              onChange: (event: Event) => setRelayPasswordDraft((event.target as HTMLInputElement).value),
-            }),
-            React.createElement('button', {
-              type: 'button',
-              className: 'dshRemoteRelayCopy',
-              onClick: () => setRelaySecretVisible(visible => !visible),
-            }, t(relaySecretVisible ? 'tailnetHideSecret' : 'tailnetShowSecret')),
-            React.createElement('button', {
-              type: 'button',
-              className: 'dshRemoteRelayCopy',
-              onClick: () => void copyRelayValue(relayPasswordDraft),
-            }, t(relayCopied === relayPasswordDraft ? 'tailnetCopied' : 'tailnetCopy'))))),
+        React.createElement('label', null,
+          React.createElement('div', { className: 'dshRemoteRelayFieldHead' },
+            React.createElement('span', null, t('tailnetPassword')),
+            React.createElement('span', { className: 'dshRemoteRelaySecretActions' },
+              React.createElement('button', {
+                type: 'button',
+                className: 'dshRemoteRelayCopy',
+                onClick: () => setRelaySecretVisible(visible => !visible),
+              }, t(relaySecretVisible ? 'tailnetHideSecret' : 'tailnetShowSecret')),
+              React.createElement('button', {
+                type: 'button',
+                className: 'dshRemoteRelayCopy',
+                onClick: () => void copyRelayValue(relayPasswordDraft),
+              }, t(relayCopied === relayPasswordDraft ? 'tailnetCopied' : 'tailnetCopy')))),
+          React.createElement('input', {
+            type: relaySecretVisible ? 'text' : 'password',
+            value: relayPasswordDraft,
+            autoComplete: 'current-password',
+            onChange: (event: Event) => setRelayPasswordDraft((event.target as HTMLInputElement).value),
+          }))),
       React.createElement('div', { className: 'dshRemoteRelayActions' },
+        relaySaved ? React.createElement('span', { className: 'dshRemoteRelaySaved' }, t('tailnetCredentialsSaved')) : null,
         React.createElement('button', {
           type: 'button',
           disabled: busy || relayAccountDraft.trim() === '' || relayPasswordDraft === '' || relayDraftUnchanged,
           onClick: () => void saveRelayCredentials(),
-        }, t(busy ? 'saving' : 'tailnetSaveCredentials')),
-        relaySaved ? React.createElement('span', { className: 'dshRemoteRelaySaved' }, t('tailnetCredentialsSaved')) : null))
+        }, t(busy ? 'saving' : 'tailnetSaveCredentials'))))
 
     const host = status?.host
     const hostStateLabel = host === undefined
@@ -348,8 +364,12 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
       React.createElement('div', { className: 'dshRemoteSectionHeading' },
         React.createElement('div', { className: 'dshRemoteSectionTitle' },
           React.createElement('strong', null, t('currentConnectedDevices')),
-          React.createElement('span', null, t('connectedClientCount', { count: connectedClients.length })))),
+          connectedClients.length === 0 ? null : React.createElement('span', { className: 'dshRemoteStatusChip' },
+            t('connectedClientCount', { count: connectedClients.length })))),
       React.createElement('div', { className: 'dshRemoteClientList', 'aria-label': t('currentConnectedDevices') },
+        connectedClients.length === 0
+          ? React.createElement('p', { className: 'dshRemoteClientEmpty' }, t('connectedClientsEmpty'))
+          : null,
         ...connectedClients.map(client => React.createElement('div', {
           key: client.deviceId,
           className: 'dshRemoteClientRow',
@@ -359,8 +379,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
             React.createElement('small', null, [
               client.platform === undefined ? undefined : formatPlatform(client.platform),
               connectedClientModeLabel(client.mode, t),
-            ].filter(value => value !== undefined).join(' · '))),
-          React.createElement('small', { className: 'dshRemoteClientOnline' }, t('connected'))))))
+            ].filter(value => value !== undefined).join(' · ')))))))
 
     const errorNotice = error === undefined
       ? null
@@ -388,14 +407,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
         },
           React.createElement('header', { className: 'dshRemotePageHeader' },
             React.createElement('div', { className: 'dshRemotePageIntro' },
-              React.createElement('div', { className: 'dshRemotePageTitleRow' },
-                React.createElement('strong', null, t('remoteTitle')),
-                React.createElement('a', {
-                  className: 'dshRemoteStarLink',
-                  href: 'https://github.com/liguobao/ds-harness-remote',
-                  target: '_blank',
-                  rel: 'noreferrer',
-                }, t('starProject'))),
+              React.createElement('strong', null, t('remoteTitle')),
               React.createElement('p', null, t('remoteDescription'))),
             React.createElement('div', { className: 'dshRemotePageActions' },
               React.createElement('button', {
@@ -415,7 +427,14 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
           React.createElement('main', { className: 'dshRemotePageBody' },
             errorNotice,
             relayAccessPanel,
-            hostControlPanel)))))
+            hostControlPanel),
+          React.createElement('footer', { className: 'dshRemotePageFooter' },
+            React.createElement('a', {
+              className: 'dshRemoteStarLink',
+              href: 'https://github.com/liguobao/ds-harness-remote',
+              target: '_blank',
+              rel: 'noreferrer',
+            }, t('starProject')))))))
   }
 
   return RemoteWorkspaceAction
