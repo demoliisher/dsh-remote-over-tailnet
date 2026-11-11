@@ -35,7 +35,7 @@
     "index.js",
     "packages/plugin/dist/index.js",
     "packages/plugin/dist/client.github.js",
-    "packages/plugin/bin/ds-harness-remote.js",
+    "packages/plugin/bin/dsh-remote-over-tailscale.js",
     "packages/plugin/public.d.ts",
     "packages/plugin/LICENSE",
     "packages/plugin/server/",
