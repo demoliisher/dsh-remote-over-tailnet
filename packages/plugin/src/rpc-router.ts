@@ -13,7 +13,6 @@ import type { RemoteFileViewerBridge } from './file-viewer-bridge.js'
 import type { HarnessRemoteBridge } from './harness-remote-bridge.js'
 import type { SafeLogger } from './logging.js'
 import type { CodexPeerBridge } from './codex/peer-bridge.js'
-import type { AcpPeerBridge } from './acp/peer-bridge.js'
 import { RpcError, safeErrorCode } from './safe-error.js'
 import type { WorkspaceUploadHost } from './workspace-upload.js'
 import type { PluginRouteBridge } from './plugin-route-bridge.js'
@@ -45,15 +44,6 @@ const apiMethods = new Set([
   'codex.app.transfer.commit',
   'codex.app.transfer.read',
   'codex.app.transfer.close',
-  'agent.acp.call',
-  'agent.acp.respond',
-  'agent.acp.stream.open',
-  'agent.acp.stream.close',
-  'agent.acp.transfer.open',
-  'agent.acp.transfer.chunk',
-  'agent.acp.transfer.commit',
-  'agent.acp.transfer.read',
-  'agent.acp.transfer.close',
   'plugin.route.call',
   'workspace.upload.open',
   'workspace.upload.chunk',
@@ -68,8 +58,6 @@ export const HOST_CAPABILITIES = [
   'workspace.upload.v1',
   'codex.appserver.v1',
   'codex.appserver.transfer.v1',
-  'agent.acp.v1',
-  'agent.acp.transfer.v1',
 ] as const
 
 export class RpcRouter {
@@ -82,7 +70,6 @@ export class RpcRouter {
     private readonly harnessRemote?: HarnessRemoteBridge,
     private readonly capabilities: () => readonly string[] = () => HOST_CAPABILITIES,
     private readonly codex?: CodexPeerBridge,
-    private readonly acp?: AcpPeerBridge,
     private readonly loopback?: LoopbackHost,
     private readonly workspaceTypes?: () => readonly RemoteWorkspaceTypeDescription[],
     private readonly pluginRoute?: PluginRouteBridge,
@@ -94,7 +81,6 @@ export class RpcRouter {
     await Promise.all([
       this.harnessRemote?.closeAll(),
       this.codex?.closeAll(),
-      this.acp?.closeAll(),
       this.workspaceUpload?.closeAll(),
     ])
   }
@@ -166,7 +152,7 @@ export class RpcRouter {
       }
       case 'remote.history.configure': {
         const { compact } = historyConfigureSchema.parse(params)
-        for (const bridge of [this.harnessRemote, this.codex, this.acp]) {
+        for (const bridge of [this.harnessRemote, this.codex]) {
           if (bridge !== undefined) bridge.compactHistoryEnabled = compact
         }
         return { compact }
@@ -198,15 +184,6 @@ export class RpcRouter {
       case 'codex.app.transfer.commit': return this.requireCodex().commitTransfer(params)
       case 'codex.app.transfer.read': return this.requireCodex().readTransfer(params)
       case 'codex.app.transfer.close': return this.requireCodex().closeTransfer(params)
-      case 'agent.acp.call': return this.requireAcp().call(params)
-      case 'agent.acp.respond': return this.requireAcp().respond(params)
-      case 'agent.acp.stream.open': return this.requireAcp().openStream(params)
-      case 'agent.acp.stream.close': return this.requireAcp().closeStream(params)
-      case 'agent.acp.transfer.open': return this.requireAcp().openTransfer(params)
-      case 'agent.acp.transfer.chunk': return this.requireAcp().appendTransfer(params)
-      case 'agent.acp.transfer.commit': return this.requireAcp().commitTransfer(params)
-      case 'agent.acp.transfer.read': return this.requireAcp().readTransfer(params)
-      case 'agent.acp.transfer.close': return this.requireAcp().closeTransfer(params)
       case 'workspace.upload.open':
       case 'workspace.upload.chunk':
       case 'workspace.upload.commit':
@@ -231,13 +208,6 @@ export class RpcRouter {
       throw new RpcError('FEATURE_NOT_SUPPORTED', 'Codex Remote is disabled or unavailable on this Host.')
     }
     return this.codex
-  }
-
-  private requireAcp(): AcpPeerBridge {
-    if (this.acp === undefined) {
-      throw new RpcError('FEATURE_NOT_SUPPORTED', 'Agent ACP is disabled or unavailable on this Host.')
-    }
-    return this.acp
   }
 
   private requirePluginRoute(): PluginRouteBridge {

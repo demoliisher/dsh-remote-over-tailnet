@@ -8,7 +8,7 @@ import type { Config } from '../src/config.js'
 import type { ControlRouteHandler } from '../src/control-route.js'
 
 const directories: string[] = []
-const disabledAgentDomains = { codex: { enabled: false }, acp: { enabled: false } }
+const disabledAgentDomains = { codex: { enabled: false } }
 
 afterEach(async () => {
   vi.unstubAllEnvs()
@@ -62,7 +62,6 @@ describe('Cordis plugin lifecycle', () => {
       ...disabledAgentDomains,
       serverUrl: 'https://legacy.example.com',
       loopback: { ports: [8080] },
-      acp: { enabled: true },
     }
     // `dsh-settings@0.2.1-rc.3` resolves a registration as
     // `schema(mergeLayers(base, user))`; a plugin with no stored section has no
@@ -86,10 +85,10 @@ describe('Cordis plugin lifecycle', () => {
       await vi.waitFor(() => { expect(ctx.get('dshRemote')).toBeDefined() })
       expect(register).toHaveBeenCalledOnce()
       expect(ctx.dshRemoteClient.status().serverUrl).toBe('https://legacy.example.com')
-      // Nested entry Config must survive: schemastery resolves `loopback` and
-      // `acp` to default-only containers, which previously overwrote the entry
-      // Config when it was merged as a flat layer on read.
-      expect(resolvedFromSchema).toMatchObject({ loopback: { ports: [8080] }, acp: { enabled: false } })
+      // Nested entry Config must survive: schemastery resolves `loopback` to a
+      // default-only container, which previously overwrote the entry Config when
+      // it was merged as a flat layer on read.
+      expect(resolvedFromSchema).toMatchObject({ loopback: { ports: [8080] } })
       // A stored section still wins, including an explicit reset to an empty list.
       expect(registerSchema?.({ loopback: { ports: [] } })).toMatchObject({ loopback: { ports: [] } })
     } finally {

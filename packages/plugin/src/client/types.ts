@@ -239,11 +239,6 @@ interface PluginSettings {
     enabled?: boolean
     binary?: string
   }
-  cursor?: {
-    enabled?: boolean
-    binary?: string
-  }
-  acp?: { enabled?: boolean; backends?: Array<{ id: string; enabled?: boolean; command?: string; args?: string[]; cwd?: string }> }
   sidebar?: { entry?: SidebarEntryStyle }
 }
 
@@ -273,12 +268,6 @@ export interface PluginSettingsView {
   applies: 'live' | 'restart'
   association?: PluginAssociation
   associations?: Partial<Record<'host' | 'client', PluginAssociation>>
-  acpAvailability?: Record<string, boolean>
-  acpInstallResult?: {
-    backend: string
-    action: 'configured' | 'installed' | 'download_required'
-    downloadUrl?: string
-  }
   startupError?: {
     code: string
     message: string

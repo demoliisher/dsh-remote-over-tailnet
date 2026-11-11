@@ -29,12 +29,7 @@ import type { LocalTypertGateway } from './typert-gateway-contract.js'
 import { loadNodeRtcFactory } from './werift-rtc.js'
 import type { AuthenticatedPeerChannel } from './types.js'
 import { CodexRemoteDomain } from './codex/domain.js'
-import { AcpGateway, StdioAcpAdapter } from './acp.js'
-import { execFileSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
 import type { CodexPeerBridge, PublishCodexFrame } from './codex/peer-bridge.js'
-import { AcpRemoteGateway } from './acp/gateway.js'
-import type { AcpPeerBridge, PublishAcpFrame } from './acp/peer-bridge.js'
 import { RpcError } from './safe-error.js'
 import { CodexWorkspaceBridge, CodexWorkspaceState, type RemoteTerminalSpawner } from './codex-workspace-bridge.js'
 
@@ -73,12 +68,9 @@ export class HostPluginRuntime {
   private pairing?: HostPairing
   private closed = false
   private readonly codex: CodexRemoteDomain
-  private readonly acp: AcpRemoteGateway
   private readonly codexWorkspaceState = new CodexWorkspaceState(key => TerminalPolicy.releaseOwner(this.terminalOwners, key))
   private localCodexPeer?: CodexPeerBridge
   private localCodexPublish: PublishCodexFrame = async () => undefined
-  private localAcpPeer?: AcpPeerBridge
-  private localAcpPublish: PublishAcpFrame = async () => undefined
 
   constructor(
     private readonly config: ResolvedConfig,
@@ -95,7 +87,6 @@ export class HostPluginRuntime {
     this.terminalEnabled = config.terminal.enabled
     this.loopbackPorts = [...config.loopback.ports]
     this.codex = new CodexRemoteDomain(config.codex, logger)
-    this.acp = new AcpRemoteGateway(config.acp ?? { enabled: false, backends: [] }, logger, undefined, undefined, () => this.terminalEnabled, this.terminalSpawner)
     this.connections = new ConnectionController(this.identities, (context, send) => {
       const peerGateway = this.localGateway?.createPeer?.() ?? this.localGateway
       const harnessRemote = peerGateway?.supportsCarrier === true
@@ -115,7 +106,7 @@ export class HostPluginRuntime {
               peerGateway,
               () => harnessSessionGeneration(this.harnessVersion) === 'v3',
               threadId => this.codex.resolveThreadWorkspace(context.connectionId, threadId),
-              sessionId => this.acp.resolveUploadWorkspace(context.connectionId, sessionId),
+              undefined,
             ),
             this.schedule,
           )
@@ -125,10 +116,6 @@ export class HostPluginRuntime {
         this.logger,
       )
       const codex = this.codex.createPeer(
-        context,
-        (event, data) => send(createEvent(event, data)),
-      )
-      const cursor = this.acp.createPeer(
         context,
         (event, data) => send(createEvent(event, data)),
       )
@@ -144,7 +131,6 @@ export class HostPluginRuntime {
         harnessRemote,
         () => this.hostCapabilities(),
         codex,
-        cursor,
         // Handles and their lifetime belong to this connection; only policy is shared.
         this.createLoopbackHost(),
         () => this.hostWorkspaceTypes(),
@@ -153,7 +139,7 @@ export class HostPluginRuntime {
           peerGateway,
           () => harnessSessionGeneration(this.harnessVersion) === 'v3',
           threadId => this.codex.resolveThreadWorkspace(context.connectionId, threadId),
-          sessionId => this.acp.resolveUploadWorkspace(context.connectionId, sessionId),
+          undefined,
         ), undefined, context.transportMode),
       )
     }, this.logger)
@@ -177,7 +163,7 @@ export class HostPluginRuntime {
     const update = this.backendUpdate.catch(() => undefined).then(async () => {
       if (this.closed) throw new Error('remote runtime is closed')
       const codexChanged = JSON.stringify(this.config.codex) !== JSON.stringify(config.codex)
-      await Promise.all([this.codex.reconfigure(config.codex), this.acp.reconfigure(config.acp ?? { enabled: false, backends: [] })])
+      await this.codex.reconfigure(config.codex)
       if (codexChanged) await this.codexWorkspaceState.dispose()
       this.config.codex = config.codex
     })
@@ -201,9 +187,6 @@ export class HostPluginRuntime {
       server: this.config.serverUrl ?? 'not configured',
     })
     await this.codex.start()
-    void this.acp.start().catch(() => {
-      this.logger.warn('ACP background initialization failed', { code: 'ACP_START_FAILED' })
-    })
     if (this.serverApi !== undefined) {
       this.harnessVersion = await this.readHarnessVersion()
       this.serverApi.setHarnessVersion(this.harnessVersion)
@@ -395,31 +378,6 @@ export class HostPluginRuntime {
     return { closed: false, streamId }
   }
 
-  acpStatus(): ReturnType<AcpRemoteGateway['status']> {
-    return this.acp.status()
-  }
-
-  acpCall(input: unknown): Promise<unknown> {
-    return this.requireLocalAcpPeer().call(input)
-  }
-
-  acpRespond(input: unknown): Promise<{ resolved: true }> {
-    return this.requireLocalAcpPeer().respond(input)
-  }
-
-  acpOpenStream(input: unknown, publish: PublishAcpFrame): Promise<unknown> {
-    this.localAcpPublish = publish
-    return this.requireLocalAcpPeer().openStream(input)
-  }
-
-  async acpCloseStream(input: unknown): Promise<unknown> {
-    const peer = this.localAcpPeer
-    if (peer !== undefined) return peer.closeStream(input)
-    const streamId = isPlainRecord(input) && typeof input.streamId === 'string' ? input.streamId : undefined
-    if (streamId === undefined) throw new RpcError('INVALID_MESSAGE', 'A Cursor stream is required.')
-    return { closed: false, streamId }
-  }
-
   async close(): Promise<void> {
     if (this.closed) return
     this.closed = true
@@ -429,9 +387,7 @@ export class HostPluginRuntime {
     await this.connections.close()
     await this.localCodexPeer?.closeAll()
     this.localCodexPeer = undefined
-    await this.localAcpPeer?.closeAll()
-    this.localAcpPeer = undefined
-    const shutdown = await Promise.allSettled([this.codexWorkspaceState.dispose(), this.codex.close(), this.acp.close()])
+    const shutdown = await Promise.allSettled([this.codexWorkspaceState.dispose(), this.codex.close()])
     if (shutdown.some(result => result.status === 'rejected')) throw new RpcError('HOST_SHUTDOWN_FAILED', 'Some Host backend processes could not be stopped.')
     this.logger.info('host runtime stopped')
   }
@@ -452,7 +408,6 @@ export class HostPluginRuntime {
       capabilities: this.hostCapabilities(),
       workspaceTypes: this.hostWorkspaceTypes(),
       codex: this.codex.status(),
-      acp: this.acp.status(),
     }
   }
 
@@ -492,16 +447,6 @@ export class HostPluginRuntime {
     if (this.fileViewerHost?.() !== undefined) capabilities.push('fileviewer.read.v1')
     if (this.pluginRoutes?.() !== undefined) capabilities.push('plugin.route.v1')
     if (this.codex.isAvailable()) capabilities.push('codex.appserver.v1', 'codex.appserver.transfer.v1')
-    // Protocol support is stable during background warmup; workspaceTypes reports readiness.
-    if (this.acp.enabledBackends().length > 0) {
-      capabilities.push('agent.acp.v1', 'agent.acp.transfer.v1', 'agent.acp.workspace-files.v1')
-      if (this.acp.enabledBackends().includes('opencode')) capabilities.push('agent.acp.opencode.archive.v1')
-      if (this.terminalEnabled) capabilities.push('agent.acp.terminal.v1')
-      if (this.acp.enabledBackends().includes('antigravity')) capabilities.push('agent.acp.antigravity.models.v1', 'agent.acp.antigravity.model-load.v1')
-      for (const backend of this.acp.enabledBackends()) {
-        capabilities.push(`agent.acp.${backend}.v1`)
-      }
-    }
     return capabilities
   }
 
@@ -515,25 +460,7 @@ export class HostPluginRuntime {
         available: true,
       })
     }
-    const readyBackends = this.acp.availableBackends()
-    for (const backend of this.acp.enabledBackends()) {
-      types.push({
-        id: backend,
-        name: backend === 'claude' ? 'Claude' : backend === 'hermes' ? 'Hermes' : backend === 'pi' ? 'Pi' : backend === 'cursor' ? 'Cursor' : backend === 'antigravity' ? 'Antigravity' : backend === 'opencode' ? 'OpenCode' : backend,
-        capability: `agent.acp.${backend}.v1`,
-        available: readyBackends.includes(backend),
-      })
-    }
     return types
-  }
-
-  private acpAvailable(command: string): boolean {
-    if (command === 'opencode') {
-      try {
-        if (existsSync('/usr/local/bin/opencode') || existsSync('/var/lib/dsh/.opencode/bin/opencode')) return true
-      } catch {}
-    }
-    try { execFileSync(process.platform === 'win32' ? 'where' : 'which', [command], { stdio: 'ignore' }); return true } catch { return false }
   }
 
   private requireLocalCodexPeer(): CodexPeerBridge {
@@ -550,23 +477,6 @@ export class HostPluginRuntime {
       throw new RpcError('CODEX_UNAVAILABLE', 'Local CodeX is disabled or unavailable on this Host.')
     }
     this.localCodexPeer = peer
-    return peer
-  }
-
-  private requireLocalAcpPeer(): AcpPeerBridge {
-    if (!this.acp.isAvailable()) {
-      throw new RpcError('CURSOR_UNAVAILABLE', 'Local Agent ACP is disabled or unavailable on this Host.')
-    }
-    if (this.localAcpPeer !== undefined) return this.localAcpPeer
-    const identity = this.currentIdentity()
-    const peer = this.acp.createPeer({
-      connectionId: `loopback:${identity.deviceId}`,
-      peerDeviceId: identity.deviceId,
-    }, (event, data) => this.localAcpPublish(event, data))
-    if (peer === undefined) {
-      throw new RpcError('CURSOR_UNAVAILABLE', 'Local Agent ACP is disabled or unavailable on this Host.')
-    }
-    this.localAcpPeer = peer
     return peer
   }
 }

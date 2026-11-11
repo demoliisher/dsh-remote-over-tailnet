@@ -1,6 +1,5 @@
 import { hostname } from 'node:os'
 import { existsSync } from 'node:fs'
-import { execFileSync } from 'node:child_process'
 import type { ControlResult } from './control-result.js'
 import { resolveConfig, type Config, type ConfigInput, type ResolvedConfig } from './config.js'
 import {
@@ -22,9 +21,6 @@ import { ServerCredentialStore, ServerCredentialsInvalidError } from './server-c
 import { registerControlRoute, type HostWebServerLike } from './control-route.js'
 import { ControlStatusStream } from './control-stream.js'
 import type { PluginUpdateSnapshot } from './update-check.js'
-import { codexBinaryCandidates } from './codex/domain.js'
-import { cursorBinaryCandidates } from './acp/gateway.js'
-import { defaultCheckExecutable, installOrConfigureBackend, isBuiltinAcpBackend } from './acp/backend-installer.js'
 import type { TailnetControl } from './tailnet/orchestrator.js'
 
 export interface PluginSettingsView {
@@ -34,12 +30,6 @@ export interface PluginSettingsView {
   applies: 'live' | 'restart'
   association?: PluginAssociation
   associations: Partial<Record<'host' | 'client', PluginAssociation>>
-  acpAvailability?: Record<string, boolean>
-  acpInstallResult?: {
-    backend: string
-    action: 'configured' | 'installed' | 'download_required'
-    downloadUrl?: string
-  }
   startupError?: {
     code: string
     message: string
@@ -155,11 +145,6 @@ export class PluginControlRuntime {
       if (endpoint === 'settings.server.set') return ok(await this.setServer(payload))
       if (endpoint === 'settings.role.set') return ok(await this.setRole(payload))
       if (endpoint === 'settings.codex.set') return ok(await this.setCodex(payload))
-      if (endpoint === 'settings.cursor.set') return ok(await this.setCursor(payload))
-      if (endpoint === 'settings.acp.set') return ok(await this.setAcp(payload))
-      if (endpoint === 'settings.acp.add') return ok(await this.addAcp(payload))
-      if (endpoint === 'settings.acp.remove') return ok(await this.removeAcp(payload))
-      if (endpoint === 'settings.acp.installOrConfigure') return ok(await this.installOrConfigureAcp(payload))
       if (endpoint === 'settings.logout') return ok(await this.logout())
       if (endpoint === 'settings.identity.reset') return ok(await this.resetIdentity(payload))
       if (endpoint === 'host.authorization.set' && this.client !== undefined) {
@@ -433,135 +418,12 @@ export class PluginControlRuntime {
     if (typeof enabled !== 'boolean') {
       throw new ClientModeError('INVALID_MESSAGE', 'Codex Remote enabled must be a boolean.')
     }
-    return this.setAcp({ backend: 'codex', enabled })
-  }
-
-  private async setCursor(payload: unknown): Promise<PluginSettingsView> {
-    if (this.settings === undefined) {
-      throw new ClientModeError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
-    }
-    const enabled = record(payload).enabled
-    if (typeof enabled !== 'boolean') {
-      throw new ClientModeError('INVALID_MESSAGE', 'Cursor Remote enabled must be a boolean.')
-    }
-    const current = editableConfig(resolveConfig(this.settings.get()))
-    const next = resolveConfig({
-      ...current,
-      cursor: { ...current.cursor, enabled },
-      acp: {
-        enabled: enabled || current.acp?.enabled === true,
-        backends: current.acp?.backends?.map(item => item.id === 'cursor' ? { ...item, enabled } : item),
-      },
-    })
-    await this.settings.replace(editableConfig(next))
+    const current = resolveConfig(this.settings.get())
+    await this.settings.replace(editableConfig(resolveConfig({ ...editableConfig(current), codex: { ...current.codex, enabled } })))
     await this.host?.setAgentBackends?.(resolveConfig(this.settings.get()))
     return { ...await this.settingsView(), applies: 'live' }
   }
 
-  private async setAcp(payload: unknown): Promise<PluginSettingsView> {
-    if (this.settings === undefined) throw new ClientModeError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
-    const value = record(payload)
-    const backend = value.backend
-    const enabled = value.enabled
-    if (typeof backend !== 'string' || typeof enabled !== 'boolean') throw new ClientModeError('INVALID_MESSAGE', 'ACP backend and enabled are required.')
-    const current = resolveConfig(this.settings.get())
-    if (!current.acp?.backends.some(item => item.id === backend)) throw new ClientModeError('INVALID_MESSAGE', 'Unknown ACP backend.')
-    const backends = current.acp.backends.map(item => item.id === backend ? { ...item, enabled } : item)
-    await this.settings.replace({
-      ...editableConfig(current),
-      ...(backend === 'cursor' ? { cursor: { ...current.cursor, enabled } } : {}),
-      ...(backend === 'codex' ? { codex: { ...current.codex, enabled } } : {}),
-      acp: { enabled: enabled || current.acp.enabled, backends },
-    })
-    await this.host?.setAgentBackends?.(resolveConfig(this.settings.get()))
-    return { ...await this.settingsView(), applies: 'live' }
-  }
-
-  private async addAcp(payload: unknown): Promise<PluginSettingsView> {
-    if (this.settings === undefined) throw new ClientModeError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
-    const value = record(payload)
-    if (typeof value.id !== 'string' || typeof value.command !== 'string' || !Array.isArray(value.args) || !value.args.every(item => typeof item === 'string')) {
-      throw new ClientModeError('INVALID_MESSAGE', 'ACP name, command, and arguments are required.')
-    }
-    const current = resolveConfig(this.settings.get())
-    if (value.id === 'kimi') throw new ClientModeError('INVALID_MESSAGE', 'Kimi is not implemented.')
-    if (current.acp?.backends.some(item => item.id === value.id)) throw new ClientModeError('INVALID_MESSAGE', 'ACP backend already exists.')
-    const backends = [...(current.acp?.backends ?? []), { id: value.id, command: value.command, args: value.args, enabled: false }]
-    const next = resolveConfig({ ...editableConfig(current), acp: { enabled: current.acp?.enabled ?? true, backends } })
-    await this.settings.replace(editableConfig(next))
-    await this.host?.setAgentBackends?.(resolveConfig(this.settings.get()))
-    return { ...await this.settingsView(), applies: 'live' }
-  }
-
-  private async removeAcp(payload: unknown): Promise<PluginSettingsView> {
-    if (this.settings === undefined) throw new ClientModeError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
-    const id = record(payload).id
-    if (typeof id !== 'string' || ['codex', 'cursor', 'antigravity', 'pi', 'claude', 'opencode', 'hermes'].includes(id)) throw new ClientModeError('INVALID_MESSAGE', 'Only custom ACP backends can be removed.')
-    const current = resolveConfig(this.settings.get())
-    const backends = (current.acp?.backends ?? []).filter(item => item.id !== id)
-    await this.settings.replace(editableConfig({ ...current, acp: { enabled: current.acp?.enabled ?? true, backends } }))
-    await this.host?.setAgentBackends?.(resolveConfig(this.settings.get()))
-    return { ...await this.settingsView(), applies: 'live' }
-  }
-
-  private async installOrConfigureAcp(payload: unknown): Promise<PluginSettingsView> {
-    if (this.settings === undefined) throw new ClientModeError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
-    const value = record(payload)
-    const backend = value.backend
-    if (typeof backend !== 'string' || !isBuiltinAcpBackend(backend)) {
-      throw new ClientModeError('INVALID_MESSAGE', 'A valid built-in ACP backend is required.')
-    }
-    const outcome = await installOrConfigureBackend(backend)
-    if (outcome.action === 'download_required') {
-      const view = await this.settingsView()
-      return {
-        ...view,
-        acpInstallResult: {
-          backend,
-          action: 'download_required',
-          downloadUrl: outcome.downloadUrl,
-        },
-      }
-    }
-    const detected = outcome.detectedCommand
-    if (!detected) {
-      throw new ClientModeError('ACP_UNAVAILABLE', `Backend ${backend} could not be configured.`)
-    }
-    const defaultArgsMap: Record<string, string[]> = {
-      codex: ['app-server'],
-      cursor: ['acp'],
-      antigravity: ['--input-format', 'stream-json', '--output-format', 'stream-json'],
-      hermes: ['acp'],
-      opencode: ['acp'],
-      pi: [],
-      claude: [],
-    }
-    const defaultArgs = defaultArgsMap[backend] ?? ['acp']
-
-    const current = resolveConfig(this.settings.get())
-    const existing = current.acp?.backends.some(item => item.id === backend)
-    const backends = existing
-      ? (current.acp?.backends ?? []).map(item => item.id === backend ? { ...item, command: detected, enabled: true } : item)
-      : [...(current.acp?.backends ?? []), { id: backend, command: detected, enabled: true, args: defaultArgs }]
-
-    await this.settings.replace({
-      ...editableConfig(current),
-      ...(backend === 'cursor' ? { cursor: { ...current.cursor, binary: detected, enabled: true } } : {}),
-      ...(backend === 'codex' ? { codex: { ...current.codex, binary: detected, enabled: true } } : {}),
-      acp: { enabled: true, backends },
-    })
-    await this.host?.setAgentBackends?.(resolveConfig(this.settings.get()))
-    const view = await this.settingsView()
-    return {
-      ...view,
-      applies: 'live',
-      acpInstallResult: {
-        backend,
-        action: outcome.action,
-        downloadUrl: outcome.downloadUrl,
-      },
-    }
-  }
   private async authorizeOwnedRole(
     serverUrl: string,
     sourceRole: 'host' | 'client',
@@ -633,7 +495,6 @@ export class PluginControlRuntime {
       writable: this.settings !== undefined,
       applies: 'restart',
       associations,
-      acpAvailability: Object.fromEntries((config.acp?.backends ?? []).map(item => [item.id, backendCommandAvailable(item.id, item.command ?? '')])),
       ...(association === undefined ? {} : { association }),
       ...(this.startupFailure === undefined ? {} : {
         startupError: safeStartupError(this.startupFailure),
@@ -699,27 +560,6 @@ export class PluginControlRuntime {
   }
 }
 
-function backendCommandAvailable(backend: string, command: string): boolean {
-  if (!command || typeof command !== 'string' || command.trim().length === 0) return false
-  const trimmed = command.trim()
-  if (defaultCheckExecutable(trimmed)) return true
-  const candidates = backend === 'codex' ? codexBinaryCandidates(trimmed)
-    : backend === 'cursor' || backend === 'antigravity' || backend === 'opencode' ? cursorBinaryCandidates(trimmed) : [trimmed]
-  return candidates.some(candidate => defaultCheckExecutable(candidate) || commandAvailable(candidate))
-}
-
-function commandAvailable(command: string): boolean {
-  try {
-    execFileSync(process.platform === 'win32' ? 'where' : 'which', [command], {
-      stdio: 'ignore',
-      timeout: 5000,
-    })
-    return true
-  } catch {
-    return false
-  }
-}
-
 function editableConfig(config: ResolvedConfig): Config {
   return {
     enabled: config.enabled,
@@ -748,11 +588,6 @@ function editableConfig(config: ResolvedConfig): Config {
       enabled: config.codex.enabled,
       binary: config.codex.binary,
     },
-    cursor: {
-      enabled: config.cursor.enabled,
-      binary: config.cursor.binary,
-    },
-    ...(config.acp === undefined ? {} : { acp: { enabled: config.acp.enabled, backends: config.acp.backends } }),
   }
 }
 

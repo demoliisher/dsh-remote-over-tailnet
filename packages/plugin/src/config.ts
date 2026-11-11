@@ -46,12 +46,6 @@ export interface Config {
     enabled?: boolean
     binary?: string
   }
-  /** Optional Cursor ACP domain carried by the existing authenticated Remote Plugin. */
-  cursor?: {
-    enabled?: boolean
-    binary?: string
-  }
-  acp?: { enabled?: boolean; backends?: Array<{ id:string; enabled?: boolean; command?: string; args?: string[]; cwd?: string }>; backend?: string; command?: string; args?: string[]; cwd?: string }
 }
 
 export interface ResolvedCodexConfig {
@@ -59,25 +53,7 @@ export interface ResolvedCodexConfig {
   binary: string
 }
 
-export interface ResolvedCursorConfig {
-  enabled: boolean
-  binary: string
-}
-
-export interface ResolvedAcpBackendConfig {
-  id: string
-  enabled: boolean
-  command: string
-  args: string[]
-  cwd?: string
-}
-
-export interface ResolvedAcpConfig {
-  enabled: boolean
-  backends: ResolvedAcpBackendConfig[]
-}
-
-export interface ResolvedConfig {
+ export interface ResolvedConfig {
   enabled: boolean
   role: 'host' | 'client' | 'both'
   serverUrl?: string
@@ -102,8 +78,6 @@ export interface ResolvedConfig {
     servePort: number
   }
   codex: ResolvedCodexConfig
-  cursor: ResolvedCursorConfig
-  acp?: ResolvedAcpConfig
 }
 
 /** The entry's volatile Cordis config: one stable reference for the whole section. */
@@ -146,11 +120,6 @@ export const entryConfigSchema = s.object({
     enabled: s.boolean(),
     binary: s.string(),
   }),
-  cursor: s.object({
-    enabled: s.boolean(),
-    binary: s.string(),
-  }),
-  acp: s.object({ enabled: s.boolean(), backends: s.array(s.object({ id:s.string(), enabled:s.boolean(), command:s.string(), args:s.array(s.string()), cwd:s.string() })) }),
 })
 
 /**
@@ -200,24 +169,10 @@ const configSchema = z.object({
     enabled: z.boolean().optional(),
     binary: z.string().trim().min(1).max(4096).optional(),
   }).strict().optional(),
-  cursor: z.object({
-    enabled: z.boolean().optional(),
-    binary: z.string().trim().min(1).max(4096).optional(),
-  }).strict().optional(),
-  acp: z.object({ enabled:z.boolean().optional(), backends:z.array(z.object({ id:z.string().trim().regex(/^[a-z0-9][a-z0-9._-]{0,31}$/i), enabled:z.boolean().optional(), command:z.string().trim().min(1).max(4096).optional(), args:z.array(z.string().max(4096)).max(32).optional(), cwd:z.string().max(4096).optional() }).strict()).max(12).optional(), backend:z.string().trim().regex(/^[a-z0-9][a-z0-9._-]{0,31}$/i).optional(), command:z.string().trim().min(1).max(4096).optional(), args:z.array(z.string().max(4096)).max(32).optional(), cwd:z.string().max(4096).optional() }).strict().optional(),
 }).strict()
 
 export function resolveConfig(input: ConfigInput = {}, env: NodeJS.ProcessEnv = process.env): ResolvedConfig {
   const parsed = configSchema.parse(input)
-  const configuredCursorBackend = parsed.acp?.backends?.find(item => item.id === 'cursor')
-  const legacyCursorEnabled = parsed.acp?.backend === 'cursor' ? parsed.acp.enabled : undefined
-  const cursorEnabled = configuredCursorBackend?.enabled
-    ?? parsed.cursor?.enabled
-    ?? legacyCursorEnabled
-    ?? false
-  const codexBackend = parsed.acp?.backends?.find(item => item.id === 'codex')
-  const codexEnabled = codexBackend?.enabled ?? parsed.codex?.enabled ?? true
-  const acpEnabled = parsed.acp?.enabled ?? false
   const reconnect = typeof parsed.reconnect === 'object' ? parsed.reconnect : {}
   const configuredServerUrl = parsed.serverUrl ?? env.DSH_REMOTE_SERVER
   const serverUrl = configuredServerUrl === undefined ? undefined : normalizeServerUrl(configuredServerUrl)
@@ -251,36 +206,8 @@ export function resolveConfig(input: ConfigInput = {}, env: NodeJS.ProcessEnv = 
       jitter: reconnect.jitter ?? 0.2,
     },
     codex: {
-      enabled: acpEnabled && codexEnabled,
-      binary: codexBackend?.command ?? parsed.codex?.binary ?? 'codex',
-    },
-    cursor: {
-      enabled: cursorEnabled,
-      binary: configuredCursorBackend?.command ?? parsed.cursor?.binary ?? env.DSH_REMOTE_CURSOR_BINARY ?? env.DSH_REMOTE_ACP_BINARY ?? 'agent',
-    },
-    acp: {
-      enabled: acpEnabled,
-      backends: [...new Set(['codex', 'cursor', 'antigravity', 'pi', 'claude', 'opencode', 'hermes', ...(parsed.acp?.backends?.filter(item => item.id !== 'kimi').map(item => item.id) ?? [])])].map(id => {
-        const configured = parsed.acp?.backends?.find(item => item.id === id)
-        const legacy = parsed.acp?.backend === id ? parsed.acp : undefined
-        const defaults: Record<string, string> = { codex: 'codex', cursor: 'agent', antigravity: 'agy', pi: 'pi-acp', claude: 'claude-agent-acp', opencode: 'opencode', hermes: 'hermes' }
-        const cursorCommand = id === 'codex' ? parsed.codex?.binary : id === 'cursor'
-          ? parsed.cursor?.binary ?? env.DSH_REMOTE_CURSOR_BINARY ?? env.DSH_REMOTE_ACP_BINARY
-          : undefined
-        const cwd = configured?.cwd ?? legacy?.cwd
-        return {
-          id,
-          enabled: configured?.enabled ?? legacy?.enabled
-            // Hermes opts in explicitly: a Host without it installed must not spawn it by default.
-            ?? (id === 'codex' ? codexEnabled : id === 'cursor' ? cursorEnabled : id === 'pi' ? true : id === 'claude' ? true
-              : id === 'opencode' ? true : id === 'hermes' ? false : parsed.acp !== undefined),
-          command: configured?.command ?? legacy?.command ?? cursorCommand ?? defaults[id] ?? id,
-          args: id === 'codex' ? ['app-server'] : configured?.args ?? legacy?.args
-            ?? (id === 'pi' || id === 'claude' ? [] : id === 'hermes' ? ['acp']
-              : id === 'antigravity' ? ['--input-format', 'stream-json', '--output-format', 'stream-json'] : ['acp']),
-          ...(cwd === undefined ? {} : { cwd }),
-        }
-      }),
+      enabled: parsed.codex?.enabled ?? true,
+      binary: parsed.codex?.binary ?? 'codex',
     },
   }
 }

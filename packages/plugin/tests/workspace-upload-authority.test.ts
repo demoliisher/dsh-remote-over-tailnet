@@ -21,7 +21,9 @@ it('uses the official authenticated Harness list and fails closed on unknown ses
 it('keeps CodeX/ACP namespace authority separate and never falls back to Harness for foreign or malformed IDs', async () => {
   const dispatch = vi.fn(), codex = vi.fn(async () => '/codex'), acp = vi.fn(() => '/acp')
   const resolve = workspaceUploadRootResolver({ supportsCarrier: true, dispatch } as unknown as LocalTypertGateway, () => true, codex, acp)
+  const withoutAcp = workspaceUploadRootResolver({ supportsCarrier: true, dispatch } as unknown as LocalTypertGateway, () => true, codex, undefined)
   const controller = new AbortController()
+  await expect(withoutAcp('acp:a', controller.signal)).rejects.toThrow()
   expect(await resolve('codex:thread-1', controller.signal)).toBe('/codex')
   expect(codex).toHaveBeenCalledWith('thread-1')
   await expect(resolve('codex:../outside', controller.signal)).rejects.toThrow()

@@ -7,7 +7,7 @@ export function workspaceUploadRootResolver(
   gateway: LocalTypertGateway | undefined,
   supportsHarnessSessions: () => boolean,
   codex: (threadId: string) => Promise<string | undefined>,
-  acp: (publicId: string) => string,
+  acp?: (publicId: string) => string,
 ): (sessionId: string, signal: AbortSignal) => Promise<string | undefined> {
   return async (sessionId, signal) => {
     signal.throwIfAborted()
@@ -16,7 +16,10 @@ export function workspaceUploadRootResolver(
       if (!parsed) throw unavailable()
       return codex(parsed.threadId)
     }
-    if (/^(acp|cursor|pi|opencode|claude|hermes):/.test(sessionId)) return acp(sessionId)
+    if (/^(acp|cursor|pi|opencode|claude|hermes):/.test(sessionId)) {
+      if (acp === undefined) throw unavailable()
+      return acp(sessionId)
+    }
     if (!gateway?.supportsCarrier || !supportsHarnessSessions()) throw unavailable()
     // The official authenticated Peer filters this list by session visibility.
     const result = await gateway.dispatch('session/list', { args: { _request: {} } }, signal)
