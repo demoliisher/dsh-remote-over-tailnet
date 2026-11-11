@@ -169,6 +169,25 @@ export class PluginControlRuntime {
         if (credentials === undefined) throw new ClientModeError('CREDENTIALS_UNAVAILABLE', '中继账号尚未生成，请等待 Tailscale 与中继就绪。')
         return ok(credentials)
       }
+      if (endpoint === 'tailnet.credentials.update') {
+        if (this.tailnet === undefined) throw new ClientModeError('METHOD_NOT_ALLOWED', 'Tailscale 组网未启用。')
+        const value = record(payload)
+        if (typeof value.account !== 'string' || value.account.trim() === '' || typeof value.password !== 'string' || value.password === '') {
+          throw new ClientModeError('INVALID_MESSAGE', '中继邮箱与密码不能为空。')
+        }
+        const credentials = { account: value.account.trim(), password: value.password }
+        const snapshot = await this.tailnet.updateCredentials(credentials)
+        if (this.host !== undefined) {
+          try {
+            await this.host.authorizeHostWithAccount(credentials.account, credentials.password)
+            this.tailnet.reportAuthorized()
+          } catch (error) {
+            this.tailnet.reportAuthorizeFailure(error)
+            throw error
+          }
+        }
+        return ok(snapshot ?? null)
+      }
       if (endpoint === 'status') {
         if (this.startupFailure !== undefined) {
           const startupError = safeStartupError(this.startupFailure)

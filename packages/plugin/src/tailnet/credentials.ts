@@ -44,6 +44,18 @@ export async function loadOrCreateRelayCredentials(directory: string): Promise<R
   return created
 }
 
+/** 校验并写入面板上修改过的账号密码；密码长度与上游 server 的启动校验保持一致。 */
+export async function saveRelayCredentials(directory: string, credentials: RelayCredentials): Promise<RelayCredentials> {
+  const account = credentials.account.trim()
+  if (account === '') throw new Error('中继账号不能为空。')
+  if (credentials.password.length < MIN_PASSWORD_LENGTH) {
+    throw new Error('中继密码至少需要 ' + String(MIN_PASSWORD_LENGTH) + ' 个字符。')
+  }
+  const next: RelayCredentials = { account, password: credentials.password }
+  await atomicWritePrivate(relayCredentialsPath(directory), `${JSON.stringify(next, null, 2)}\n`)
+  return next
+}
+
 function parseCredentials(value: unknown): RelayCredentials | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
   const record = value as Record<string, unknown>

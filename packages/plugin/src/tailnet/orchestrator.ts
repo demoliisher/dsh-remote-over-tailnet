@@ -1,7 +1,7 @@
 import type { ResolvedConfig } from '../config.js'
 import type { SafeLogger } from '../logging.js'
 import { join } from 'node:path'
-import { loadOrCreateRelayCredentials, type RelayCredentials } from './credentials.js'
+import { loadOrCreateRelayCredentials, saveRelayCredentials, type RelayCredentials } from './credentials.js'
 import { detectTailnet, httpsCertificateReady, tailnetHttpsUrl } from './detect.js'
 import { ensureServe, ServeError } from './serve.js'
 import { RelayError, relayLogPath, startRelay, type RelayHandle } from './relay.js'
@@ -50,10 +50,15 @@ export interface TailnetSnapshot {
   updatedAt: string
 }
 
-/** 控制层消费的只读接口。 */
+/** 控制层消费的接口。 */
 export interface TailnetControl {
   snapshot(): TailnetSnapshot | undefined
   credentials(): RelayCredentials | undefined
+  /** 修改中继账号密码并重启中继；成功后由调用方重新授权 Host。 */
+  updateCredentials(credentials: RelayCredentials): Promise<TailnetSnapshot | undefined>
+  /** 记录 Host 授权结果，供面板展示。 */
+  reportAuthorized(): void
+  reportAuthorizeFailure(error: unknown): void
 }
 
 export interface TailnetOrchestratorOptions {
@@ -132,6 +137,57 @@ export class TailnetOrchestrator implements TailnetControl {
     this.state = undefined
     this.options.config = config
     await this.start()
+  }
+
+  /**
+   * 面板修改中继账号密码：先写盘再重启中继。密码变化会让 state.json 里旧令牌全部失效，
+   * 调用方必须在成功后立刻用新凭据重新授权 Host。
+   */
+  async updateCredentials(next: RelayCredentials): Promise<TailnetSnapshot | undefined> {
+    const { config, logger } = this.options
+    const relayPort = tailnetRelayPort(config.serverUrl)
+    const publicUrl = this.state?.publicUrl
+    if (this.state === undefined || relayPort === undefined || publicUrl === undefined || this.relayCredentials === undefined) {
+      throw new TailnetOrchestrationError('TAILNET_NOT_READY', '本地中继尚未启动，暂时不能修改账号密码。')
+    }
+    const saved = await saveRelayCredentials(this.dataDirectory(), next)
+    const previous = this.relay
+    this.relay = undefined
+    if (previous !== undefined) await previous.stop()
+    this.relayCredentials = saved
+    this.state.account = saved.account
+    this.state.error = undefined
+    this.state.phase = 'starting'
+    this.state.steps.relay = { ok: null, detail: '正在用新账号密码重启中继' }
+    this.state.steps.authorize = { ok: null, detail: '账号密码已更新，等待 Host 重新授权' }
+    this.publish()
+    try {
+      this.relay = await startRelay({
+        serverRoot: join(this.options.packageRoot, 'server'),
+        pluginVersion: this.options.pluginVersion,
+        dataDirectory: this.dataDirectory(),
+        port: relayPort,
+        publicUrl,
+        account: saved.account,
+        password: saved.password,
+        logger,
+        onExit: info => this.onRelayExit(info),
+      })
+      this.state.relayPid = this.relay.pid
+      this.state.logPath = relayLogPath(this.dataDirectory())
+      this.state.steps.relay = { ok: true, detail: '中继运行在 127.0.0.1:' + String(relayPort) + '（进程 ' + String(this.relay.pid) + '）' }
+      this.state.phase = 'ready'
+      this.publish()
+      logger.info('relay credentials updated', { account: saved.account, relayPort })
+      return this.snapshot()
+    } catch (error) {
+      const info = toTailnetError(error)
+      this.state.error = info
+      this.state.phase = 'error'
+      this.state.steps.relay = { ok: false, detail: info.message }
+      this.publish()
+      throw error
+    }
   }
 
   async start(): Promise<void> {

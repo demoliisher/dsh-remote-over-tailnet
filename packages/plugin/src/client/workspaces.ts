@@ -20,6 +20,7 @@ import type {
   PortalRenderer,
   SidebarEntryPreference,
   SidebarEntryStyle,
+  TailnetCredentialsView,
 } from './types.js'
 
 export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalRenderer) {
@@ -159,9 +160,9 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     const [email, setEmail] = React.useState('')
     const [password, setPassword] = React.useState('')
     const [loginServerUrl, setLoginServerUrl] = React.useState('http://127.0.0.1:8080')
-    const [editingServer, setEditingServer] = React.useState(false)
-    const [savingServer, setSavingServer] = React.useState(false)
-    const serverDirty = loginServerUrl.trim() !== (status?.serverUrl ?? '')
+    const [loginSecretVisible, setLoginSecretVisible] = React.useState(false)
+    // 本机中继的账号密码：打开登录框时预填，改成别的值时写回中继并让 Host 重新授权。
+    const [relayCredentials, setRelayCredentials] = React.useState<TailnetCredentialsView | undefined>(undefined)
     const [hostEmail, setHostEmail] = React.useState('')
     const [hostPassword, setHostPassword] = React.useState('')
     const [hostRegistrationCode, setHostRegistrationCode] = React.useState('')
@@ -237,6 +238,22 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
         setLoginServerUrl(status.serverUrl)
       }
     }, [status?.serverUrl])
+
+    // 打开登录框时预填本机中继账号密码。取不到说明当前没有本地中继（客户端模式或
+    // Tailscale 组网关闭），保留空输入由用户手填。
+    React.useEffect(() => {
+      if (!open || needsAuthorization !== true) return undefined
+      let cancelled = false
+      void props.control<TailnetCredentialsView | null>('tailnet.credentials')
+        .then(credentials => {
+          if (cancelled || credentials === null) return
+          setRelayCredentials(credentials)
+          setEmail(previous => previous === '' ? credentials.account : previous)
+          setPassword(previous => previous === '' ? credentials.password : previous)
+        })
+        .catch(() => undefined)
+      return () => { cancelled = true }
+    }, [open, needsAuthorization, props.control])
 
     React.useEffect(() => {
       const remoteActive = status?.mode === 'remote'
@@ -678,35 +695,17 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
       setNotice(undefined)
     }
 
-    const saveLoginServer = async (serverUrlOverride?: string): Promise<void> => {
-      const nextServerUrl = (serverUrlOverride ?? loginServerUrl).trim()
-      if (nextServerUrl === '' || savingServer) return
-      resetLoginFlow()
-      setSavingServer(true)
-      setBusy(true)
-      try {
-        const view = await props.control<PluginSettingsView>('settings.server.set', { serverUrl: nextServerUrl })
-        if (view.applies !== 'live') {
-          setNotice(t('serverSaved'))
-          return
-        }
-        const nextStatus = await props.control<RemoteStatus>('status')
-        setStatus(nextStatus)
-        setLoginServerUrl(nextStatus.serverUrl ?? loginServerUrl.trim())
-        setEditingServer(false)
-      } catch (reason) {
-        setError(messageOf(reason, t))
-      } finally {
-        setSavingServer(false)
-        setBusy(false)
-      }
-    }
-
     const signInClient = async (): Promise<void> => {
-      if (serverDirty || savingServer || email.trim() === '' || password === '' || loginServerUrl.trim() === '') return
+      if (email.trim() === '' || password === '' || loginServerUrl.trim() === '') return
       setBusy(true)
       setError(undefined)
       try {
+        // 面板上的账号密码就是本机中继的账号密码：改过就先写回中继并让 Host 重新授权，
+        // 这样手机端与桌面端始终用同一套凭据。
+        if (relayCredentials !== undefined && (email.trim() !== relayCredentials.account || password !== relayCredentials.password)) {
+          await props.control('tailnet.credentials.update', { account: email.trim(), password })
+          setRelayCredentials({ account: email.trim(), password })
+        }
         if (status?.clientAuthRequired) {
           await props.control('client.account.login', { email: email.trim(), password })
         } else {
@@ -1041,6 +1040,8 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
         onClick: () => void (remoteActive && !reauth ? openLocalWorkspaces() : show()),
       }, computerIcon, updateDot))
     const compact = sidebarEntry === 'compact' && props.wide && props.portal !== undefined
+    // 手机端要填的服务地址：优先 Tailscale 对外域名；没有组网时退回当前服务器地址。
+    const serviceAddress = status?.tailnet?.publicUrl ?? status?.serverUrl ?? loginServerUrl
 
     return React.createElement(React.Fragment, null,
       compact
@@ -1110,55 +1111,18 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
                   'aria-label': t('account'), onChange: (event: Event) => setEmail((event.target as HTMLInputElement).value),
                 }),
                 React.createElement('input', {
-                  type: 'password', value: password, disabled: busy, autoComplete: 'current-password', placeholder: t('password'),
+                  type: loginSecretVisible ? 'text' : 'password', value: password, disabled: busy, autoComplete: 'current-password', placeholder: t('password'),
                   'aria-label': t('password'), onChange: (event: Event) => setPassword((event.target as HTMLInputElement).value),
                 }),
-                React.createElement('button', { type: 'button', disabled: busy || savingServer || serverDirty || loginServerUrl.trim() === '' || email.trim() === '' || password === '', onClick: () => void signInClient() }, t(busy ? 'signingIn' : 'startSignIn')),
+                React.createElement('button', {
+                  type: 'button', className: 'dshRemoteSecretToggle', disabled: busy,
+                  onClick: () => setLoginSecretVisible(visible => !visible),
+                }, t(loginSecretVisible ? 'tailnetHideSecret' : 'tailnetShowSecret')),
+                React.createElement('button', { type: 'button', disabled: busy || loginServerUrl.trim() === '' || email.trim() === '' || password === '', onClick: () => void signInClient() }, t(busy ? 'signingIn' : 'startSignIn')),
                 React.createElement('p', { className: 'dshRemotePasswordHint' }, t('passwordHint'))),
               React.createElement('div', { className: 'dshRemoteServiceAddress' },
                 React.createElement('span', null, t('currentServiceAddress')),
-                editingServer
-                  ? React.createElement('form', {
-                    className: 'dshRemoteLoginServer',
-                    onSubmit: (event: Event) => { event.preventDefault(); void saveLoginServer() },
-                  },
-                    React.createElement('input', {
-                      id: 'dsh-remote-login-server', type: 'url', required: true,
-                      'aria-label': t('serverUrl'), value: loginServerUrl,
-                      disabled: busy || savingServer, autoComplete: 'url',
-                      placeholder: t('serverUrl'), onChange: (event: Event) => {
-                        resetLoginFlow()
-                        setLoginServerUrl((event.target as HTMLInputElement).value)
-                      },
-                    }),
-                    React.createElement('button', {
-                      type: 'submit', disabled: busy || savingServer || loginServerUrl.trim() === '',
-                    }, t(savingServer ? 'saving' : 'save')),
-                    React.createElement('button', {
-                      type: 'button', disabled: busy || savingServer,
-                      onClick: () => { resetLoginFlow(); setLoginServerUrl('http://127.0.0.1:8080'); void saveLoginServer('http://127.0.0.1:8080') },
-                    }, t('restoreDefaultServiceAddress')),
-                    React.createElement('button', {
-                      type: 'button', disabled: busy || savingServer,
-                      onClick: () => {
-                        setLoginServerUrl(status?.serverUrl ?? 'http://127.0.0.1:8080')
-                        setEditingServer(false)
-                      },
-                    }, t('cancelServiceAddressEdit')))
-                  : React.createElement(React.Fragment, null,
-                    React.createElement('a', {
-                      href: status?.serverUrl ?? loginServerUrl, target: '_blank', rel: 'noreferrer',
-                    }, status?.serverUrl ?? loginServerUrl),
-                    React.createElement('button', {
-                      type: 'button', className: 'dshRemoteServiceAddressEdit',
-                      disabled: busy || savingServer,
-                      title: t('editServiceAddress'), 'aria-label': t('editServiceAddress'),
-                      onClick: () => setEditingServer(true),
-                    }, React.createElement('svg', {
-                      viewBox: '0 0 24 24', width: 16, height: 16, fill: 'none',
-                      stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round',
-                      'aria-hidden': true,
-                    }, React.createElement('path', { d: 'M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4L16.5 3.5Z' })))))) : null,
+                React.createElement('a', { href: serviceAddress, target: '_blank', rel: 'noreferrer' }, serviceAddress))) : null,
             needsAuthorization !== false ? null : React.createElement(React.Fragment, null,
               selectedHost === undefined ? React.createElement('section', { className: 'dshRemoteHosts', 'aria-label': t('chooseHost') },
                 status?.hostAuthorizationAvailable && status.host?.accountRequired
