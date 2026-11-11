@@ -384,7 +384,7 @@ export function createRemotePluginOptions(React: ClientReact) {
             ? React.createElement('input', {
               type: 'checkbox', role: 'switch', disabled: busy,
               'aria-label': t('allowControlCurrentDevice'),
-              checked: host?.authorized === true,
+              checked: host?.enabled === true,
               onChange: (event: Event) => void setCurrentDeviceControl((event.target as HTMLInputElement).checked),
             })
             : null),

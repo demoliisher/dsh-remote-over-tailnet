@@ -334,7 +334,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
                 type: 'checkbox',
                 role: 'switch',
                 'aria-label': t('allowControlCurrentDevice'),
-                checked: host?.authorized === true,
+                checked: host?.enabled === true,
                 onChange: (event: Event) => void setHostAuthorization((event.target as HTMLInputElement).checked),
               }))
             : null)),
