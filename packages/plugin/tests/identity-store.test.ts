@@ -193,6 +193,26 @@ describe('IdentityStore', () => {
     }
   })
 
+  it('renames the existing device without replacing its identity', async () => {
+    const directory = await temporaryDirectory()
+    const first = await new IdentityStore({ directory }).loadOrCreate('Workstation')
+    const renamed = await new IdentityStore({ directory }).rename('Renamed workstation')
+    expect(renamed).toMatchObject({
+      deviceId: first.deviceId,
+      publicKey: first.publicKey,
+      privateKey: first.privateKey,
+      name: 'Renamed workstation',
+    })
+    const stored = JSON.parse(await readFile(join(directory, 'device.json'), 'utf8'))
+    expect(stored).toMatchObject({ deviceId: first.deviceId, name: 'Renamed workstation' })
+    await expect(new IdentityStore({ directory }).loadExisting()).resolves.toMatchObject({
+      deviceId: first.deviceId,
+      name: 'Renamed workstation',
+    })
+    const empty = await temporaryDirectory()
+    await expect(new IdentityStore({ directory: empty }).rename('Nothing')).rejects.toBeInstanceOf(IdentityInvalidError)
+  })
+
   it('persists trusted peers without private material', async () => {
     const hostDirectory = await temporaryDirectory()
     const clientDirectory = await temporaryDirectory()

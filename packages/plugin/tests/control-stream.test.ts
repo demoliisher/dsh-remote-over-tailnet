@@ -345,6 +345,16 @@ function hostControl(): HostControl {
     }),
     reconnectHost: () => undefined,
     setHostControl: async () => undefined,
+    renameHost: async deviceName => ({
+      configured: true,
+      deviceName,
+      enabled: true,
+      online: true,
+      reconnecting: false,
+      authorized: true,
+      accountRequired: false,
+      connectedClients: [],
+    }),
     authorizeHostWithAccount: async () => undefined,
   }
 }

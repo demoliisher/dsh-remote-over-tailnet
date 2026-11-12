@@ -101,6 +101,60 @@ describe('PluginControlRuntime settings', () => {
   })
 })
 
+describe('PluginControlRuntime device name', () => {
+  it('persists the name and re-registers the Host through the ready relay', async () => {
+    const settings = settingsBinding({ serverUrl: 'https://relay.example.test' })
+    let currentName = 'demoliisher'
+    const renameHost = vi.fn(async (deviceName: string) => {
+      currentName = deviceName
+      return hostStatus({ deviceName })
+    })
+    const tailnet = tailnetStub({ credentials: { account: 'relay@example.test', password: 'relay-password' } })
+    const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, hostStub({
+      hostStatus: () => hostStatus({ deviceName: currentName }),
+      renameHost,
+    }), tailnet))
+
+    await expect(handler('settings.deviceName.set', { deviceName: '  workbench  ' }, signal())).resolves.toMatchObject({
+      ok: true,
+      value: { deviceName: 'workbench' },
+    })
+    expect(settings.get().deviceName).toBe('workbench')
+    expect(renameHost).toHaveBeenCalledWith('workbench', { account: 'relay@example.test', password: 'relay-password' })
+    expect(tailnet.reportAuthorized).toHaveBeenCalled()
+  })
+
+  it('keeps the local name when no relay is ready and rejects invalid or unwritable names', async () => {
+    const settings = settingsBinding({ serverUrl: 'https://relay.example.test' })
+    const renameHost = vi.fn(async (deviceName: string) => hostStatus({ deviceName }))
+    const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, hostStub({
+      hostStatus: () => hostStatus({ deviceName: 'demoliisher' }),
+      renameHost,
+    }), tailnetStub({ relayReady: false })))
+
+    await expect(handler('settings.deviceName.set', { deviceName: 'office' }, signal())).resolves.toMatchObject({ ok: true })
+    expect(renameHost).toHaveBeenCalledWith('office', undefined)
+    expect(settings.get().deviceName).toBe('office')
+    for (const deviceName of ['', '   ', 'x'.repeat(81), 42]) {
+      await expect(handler('settings.deviceName.set', { deviceName }, signal()))
+        .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'INVALID_MESSAGE' } } })
+    }
+    expect(settings.get().deviceName).toBe('office')
+
+    const unwritable = register(new PluginControlRuntime(resolveConfig({}), undefined, hostStub()))
+    await expect(unwritable('settings.deviceName.set', { deviceName: 'workbench' }, signal()))
+      .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'SETTINGS_UNAVAILABLE' } } })
+
+    const offlineSettings = settingsBinding({})
+    const offline = register(new PluginControlRuntime(resolveConfig(offlineSettings.get()), offlineSettings, undefined))
+    await expect(offline('settings.deviceName.set', { deviceName: 'offline' }, signal())).resolves.toMatchObject({
+      ok: true,
+      value: { deviceName: 'offline', serviceAvailable: false },
+    })
+    expect(offlineSettings.get().deviceName).toBe('offline')
+  })
+})
+
 describe('PluginControlRuntime remote service', () => {
   it('turns the remote service off without revoking the device and persists the switch', async () => {
     const settings = settingsBinding({ serverUrl: 'https://relay.example.test' })
@@ -382,6 +436,7 @@ function hostStub(overrides: Partial<HostControl> = {}): HostControl {
     authorizeHostWithAccount: vi.fn(async () => ({ method: 'account' })),
     reconnectHost: vi.fn(),
     setHostControl: vi.fn(async () => undefined),
+    renameHost: vi.fn(async deviceName => hostStatus({ deviceName })),
     ...overrides,
   }
 }

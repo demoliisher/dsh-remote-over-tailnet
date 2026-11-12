@@ -1,4 +1,3 @@
-import { hostname } from 'node:os'
 import type { ControlResult } from './control-result.js'
 import { resolveConfig, type Config, type ConfigInput, type ResolvedConfig } from './config.js'
 import { safeStartupError } from './safe-error.js'
@@ -45,6 +44,7 @@ export interface HostControl {
   authorizeHostWithAccount(email: string, password: string): Promise<unknown>
   reconnectHost(): void
   setHostControl(enabled: boolean): Promise<void>
+  renameHost(deviceName: string, credentials?: { account: string; password: string }): Promise<HostRemoteStatus>
   setTerminalEnabled?(enabled: boolean): void
   setLoopbackPorts?(ports: readonly number[]): void
 }
@@ -105,6 +105,7 @@ export class PluginControlRuntime {
       if (endpoint === 'settings.appearance.set') return ok(await this.setAppearance(payload))
       if (endpoint === 'settings.get') return ok(this.settingsView())
       if (endpoint === 'service.set') return ok(await this.setService(payload))
+      if (endpoint === 'settings.deviceName.set') return ok(await this.setDeviceName(payload))
       if (endpoint === 'host.reconnect') {
         if (this.host === undefined) throw new ControlError('METHOD_NOT_ALLOWED', '插件当前没有运行 Host。')
         this.host.reconnectHost()
@@ -116,7 +117,7 @@ export class PluginControlRuntime {
       if (endpoint === 'status') {
         if (this.startupFailure !== undefined) {
           return this.withTailnet(ok({
-            deviceName: hostname(),
+            deviceName: this.config.deviceName,
             startupError: safeStartupError(this.startupFailure),
             serviceAvailable: false,
           }))
@@ -193,6 +194,33 @@ export class PluginControlRuntime {
     return snapshot ?? null
   }
 
+  private async setDeviceName(payload: unknown): Promise<Record<string, unknown>> {
+    if (this.settings === undefined) throw new ControlError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
+    const value = record(payload)
+    if (typeof value.deviceName !== 'string') throw new ControlError('INVALID_MESSAGE', '需要提供本机名称。')
+    const deviceName = value.deviceName.trim()
+    if (deviceName === '' || deviceName.length > 80) throw new ControlError('INVALID_MESSAGE', '本机名称需为 1 到 80 个字符。')
+    await this.persistDeviceName(deviceName)
+    if (this.host === undefined) return this.hostOnlyStatus()
+    // 中继就绪时把新名称重新注册到服务器；外部服务器或服务停用时只改本机身份。
+    const credentials = this.tailnet?.relayReady() === true ? this.credentials() : undefined
+    try {
+      await this.host.renameHost(deviceName, credentials)
+      if (credentials !== undefined) this.tailnet?.reportAuthorized()
+    } catch (error) {
+      if (credentials !== undefined) this.tailnet?.reportAuthorizeFailure(error)
+      throw error
+    }
+    return this.hostOnlyStatus()
+  }
+
+  private async persistDeviceName(deviceName: string): Promise<void> {
+    const current = resolveConfig(this.settings === undefined ? this.config : this.settings.get())
+    const next = resolveConfig({ ...editableConfig(current), deviceName })
+    this.config = next
+    if (this.settings !== undefined) await this.settings.replace(editableConfig(next))
+  }
+
   private async persistService(enabled: boolean): Promise<void> {
     const current = resolveConfig(this.settings === undefined ? this.config : this.settings.get())
     const next = resolveConfig({ ...editableConfig(current), service: { enabled } })
@@ -236,7 +264,7 @@ export class PluginControlRuntime {
       : editableConfig(resolveConfig(this.settings.get()))
     return {
       config,
-      deviceName: hostname(),
+      deviceName: this.currentDeviceName(),
       writable: this.settings !== undefined,
       ...(this.startupFailure === undefined ? {} : { startupError: safeStartupError(this.startupFailure) }),
     }
@@ -252,9 +280,14 @@ export class PluginControlRuntime {
     return ok({ ...result.value, tailnet })
   }
 
+  private currentDeviceName(): string {
+    const config = this.settings === undefined ? this.config : resolveConfig(this.settings.get())
+    return this.host?.hostStatus().deviceName ?? config.deviceName
+  }
+
   private hostOnlyStatus(): Record<string, unknown> {
     return {
-      deviceName: hostname(),
+      deviceName: this.currentDeviceName(),
       serviceAvailable: this.host !== undefined,
       ...(this.host === undefined ? {} : { host: this.host.hostStatus() }),
     }
@@ -264,6 +297,7 @@ export class PluginControlRuntime {
 function editableConfig(config: ResolvedConfig): Config {
   return {
     enabled: config.enabled,
+    deviceName: config.deviceName,
     ...(config.serverUrl === undefined ? {} : { serverUrl: config.serverUrl }),
     terminal: config.terminal,
     sidebar: config.sidebar,

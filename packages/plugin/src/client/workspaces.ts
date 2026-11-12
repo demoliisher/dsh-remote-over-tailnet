@@ -97,6 +97,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     const [relayPasswordDraft, setRelayPasswordDraft] = React.useState('')
     const [relaySecretVisible, setRelaySecretVisible] = React.useState(false)
     const [relaySaved, setRelaySaved] = React.useState(false)
+    const [deviceNameDraft, setDeviceNameDraft] = React.useState('')
     const pageRef = React.useRef<HTMLElement | null>(null)
     const [error, setError] = React.useState<string | undefined>(undefined)
     const [sidebarEntry, setSidebarEntry] = React.useState<SidebarEntryStyle>(() => props.sidebarEntry.read())
@@ -157,6 +158,12 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
       setRelayPasswordDraft(relayCredentials.password)
     }, [relayCredentials])
 
+    // 状态推送只在名称真的变化时覆盖输入框，用户正在编辑的内容不会被重连事件冲掉。
+    React.useEffect(() => {
+      if (!open) return
+      setDeviceNameDraft(status?.deviceName ?? '')
+    }, [open, status?.deviceName])
+
     const refreshRemote = async (): Promise<void> => {
       setBusy(true)
       setError(undefined)
@@ -179,17 +186,29 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     const relayDraftUnchanged = relayCredentials !== undefined
       && relayAccountDraft.trim() === relayCredentials.account
       && relayPasswordDraft === relayCredentials.password
+    const trimmedDeviceName = deviceNameDraft.trim()
+    const deviceNameChanged = trimmedDeviceName !== (status?.deviceName ?? '')
+    const deviceNameValid = trimmedDeviceName !== '' && trimmedDeviceName.length <= 80
+    // 名称单独保存也能生效；账号密码只有填写完整且确实变化时才提交。
+    const credentialsChanged = !relayDraftUnchanged && relayAccountDraft.trim() !== '' && relayPasswordDraft !== ''
     // 保存后 Host 用新凭据重启中继并重新登录本机，客户端要重连一次。
-    const saveRelayCredentials = async (): Promise<void> => {
-      if (relayAccountDraft.trim() === '' || relayPasswordDraft === '') return
-      if (relayDraftUnchanged) return
+    const saveConnectionSettings = async (): Promise<void> => {
+      if (!deviceNameValid) return
+      if (!deviceNameChanged && !credentialsChanged) return
       setBusy(true)
       setError(undefined)
       setRelaySaved(false)
       try {
-        const nextCredentials = { account: relayAccountDraft.trim(), password: relayPasswordDraft }
-        await props.control('tailnet.credentials.update', nextCredentials)
-        setRelayCredentials(nextCredentials)
+        if (deviceNameChanged) {
+          const nextStatus = await props.control<RemoteStatus>('settings.deviceName.set', { deviceName: trimmedDeviceName })
+          setStatus(nextStatus)
+          setDeviceNameDraft(nextStatus.deviceName ?? trimmedDeviceName)
+        }
+        if (credentialsChanged) {
+          const nextCredentials = { account: relayAccountDraft.trim(), password: relayPasswordDraft }
+          await props.control('tailnet.credentials.update', nextCredentials)
+          setRelayCredentials(nextCredentials)
+        }
         setStatus(await props.control<RemoteStatus>('status'))
         setRelaySaved(true)
         window.setTimeout(() => setRelaySaved(false), 2500)
@@ -304,6 +323,15 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
           href: tailnet.error.actionUrl, target: '_blank', rel: 'noreferrer',
         }, t('openInBrowser'))),
       React.createElement('div', { className: 'dshRemoteRelayFields' },
+        React.createElement('label', { className: 'dshRemoteRelayFieldWide' },
+          React.createElement('span', { className: 'dshRemoteRelayFieldLabel' }, t('hostName')),
+          React.createElement('input', {
+            type: 'text',
+            value: deviceNameDraft,
+            maxLength: 80,
+            autoComplete: 'off',
+            onChange: (event: Event) => setDeviceNameDraft((event.target as HTMLInputElement).value),
+          })),
         React.createElement('label', null,
           React.createElement('span', { className: 'dshRemoteRelayFieldLabel' }, t('tailnetAccount')),
           React.createElement('input', {
@@ -334,20 +362,11 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
           relaySaved ? React.createElement('span', { className: 'dshRemoteRelaySaved' }, t('tailnetCredentialsSaved')) : null,
           React.createElement('button', {
             type: 'button',
-            disabled: busy || relayAccountDraft.trim() === '' || relayPasswordDraft === '' || relayDraftUnchanged,
-            onClick: () => void saveRelayCredentials(),
+            disabled: busy || !deviceNameValid || (!deviceNameChanged && !credentialsChanged),
+            onClick: () => void saveConnectionSettings(),
           }, t(busy ? 'saving' : 'tailnetSaveCredentials')))))
 
     const host = status?.host
-    const hostStateLabel = host === undefined
-      ? t('checkingConnection')
-      : host.enabled === false
-        ? t('serviceStopped')
-        : host.online
-          ? t('online')
-          : host.reconnecting
-            ? t('connecting')
-            : t('offline')
     const connectedClients = host?.connectedClients ?? []
     const hostControlPanel = React.createElement('section', { className: 'dshRemoteHostControl' },
       React.createElement('div', { className: 'dshRemoteSectionHeading' },
@@ -364,13 +383,6 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
               }))
             : null)),
       React.createElement('p', { className: 'dshRemoteHostHint' }, t('remoteServiceHint')),
-      React.createElement('p', { className: 'dshRemoteHostState' },
-        status?.deviceName === undefined
-          ? hostStateLabel
-          : React.createElement(React.Fragment, null,
-            React.createElement('span', null, status.deviceName),
-            React.createElement('span', { className: 'dshRemoteHostStateDot' }, '·'),
-            React.createElement('span', null, hostStateLabel))),
       React.createElement('div', { className: 'dshRemoteSectionHeading' },
         React.createElement('div', { className: 'dshRemoteSectionTitle' },
           React.createElement('strong', null, t('currentConnectedDevices')),

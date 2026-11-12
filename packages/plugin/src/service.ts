@@ -40,8 +40,9 @@ export interface HostConnectedClient {
 
 export interface HostRemoteStatus {
   deviceId?: string
+  deviceName?: string
   configured: boolean
-  /** 「允许控制本机」开关：关闭时控制连接不启动，设备身份与授权保留。 */
+  /** 「远程服务」总开关：关闭时控制连接不启动，设备身份与授权保留。 */
   enabled: boolean
   online: boolean
   reconnecting: boolean
@@ -61,6 +62,7 @@ export class HostPluginRuntime {
   private terminalEnabled: boolean
   private loopbackPorts: readonly number[]
   private identity?: HostIdentity
+  private deviceName: string
   private readonly serverApi?: HostServerApi
   private serverConnection?: HostServerConnection
   private harnessVersion?: string
@@ -83,6 +85,7 @@ export class HostPluginRuntime {
     /** Host `schedule` service; absent on Hosts whose composition omits reminders. */
     private readonly schedule?: ScheduleCreateService,
   ) {
+    this.deviceName = config.deviceName
     this.terminalEnabled = config.terminal.enabled
     this.loopbackPorts = [...config.loopback.ports]
     this.controlEnabled = config.service.enabled
@@ -180,7 +183,7 @@ export class HostPluginRuntime {
 
   async start(): Promise<void> {
     if (this.closed) throw new Error('remote runtime is closed')
-    this.identity = await this.identities.loadOrCreate(this.config.deviceName)
+    this.identity = await this.identities.loadOrCreate(this.deviceName)
     this.logger.info('host identity ready', {
       deviceId: shortId(this.identity.deviceId),
       fingerprint: this.identity.fingerprint,
@@ -210,7 +213,7 @@ export class HostPluginRuntime {
     const error = this.serverConnection?.lastError()
     const authorization = this.serverApi?.currentAuthorization()
     return {
-      ...(this.identity === undefined ? {} : { deviceId: this.identity.deviceId }),
+      ...(this.identity === undefined ? {} : { deviceId: this.identity.deviceId, deviceName: this.identity.name }),
       configured: this.serverApi !== undefined,
       enabled: this.controlEnabled,
       online: this.serverConnection?.isOnline() ?? false,
@@ -252,7 +255,7 @@ export class HostPluginRuntime {
   }
 
   /**
-   * 「允许控制本机」开关。关闭只停控制连接，设备授权与身份保持不变；
+   * 「远程服务」总开关的 Host 侧动作。关闭只停控制连接，设备授权与身份保持不变；
    * 重新打开时直接恢复连接，本机凭据缺失时由调用方先重新授权。
    */
   async setHostControl(enabled: boolean): Promise<void> {
@@ -265,13 +268,34 @@ export class HostPluginRuntime {
     else await this.serverConnection.stop()
   }
 
+  /**
+   * 改名保留同一设备身份；控制连接在构造时捕获身份，所以先停旧连接再重建。
+   * 传入中继账号密码时重新注册，让服务器上的设备目录同步新名称。
+   */
+  async renameHost(deviceName: string, credentials?: { account: string; password: string }): Promise<HostRemoteStatus> {
+    if (this.closed) throw new Error('remote runtime is closed')
+    const name = deviceName.trim()
+    if (name === '' || name.length > 80) throw new ServerApiError('INVALID_DEVICE_NAME', 'The device name must be 1 to 80 characters.', false)
+    await this.serverConnection?.stop()
+    this.deviceName = name
+    this.identity = await this.identities.rename(name)
+    if (this.serverApi !== undefined) {
+      this.serverApi.bindIdentity(this.identity)
+      this.serverConnection = this.createServerConnection(this.identity)
+      if (credentials !== undefined) await this.authorizeHostWithAccount(credentials.account, credentials.password)
+      else if (this.controlEnabled) this.serverConnection.resume()
+    }
+    this.logger.info('Host device renamed', { deviceId: shortId(this.identity.deviceId) })
+    return this.hostStatus()
+  }
+
   async authorizeHostWithAccount(email: string, password: string): Promise<DeviceAuthorization> {
     if (this.serverApi === undefined) {
       throw new ServerApiError('SERVER_NOT_CONFIGURED', 'Configure serverUrl before signing in.', false)
     }
     const result = await this.serverApi.authorizeWithAccount(this.currentIdentity(), email, password, async () => {
       await this.serverConnection?.stop()
-      this.identity = await this.identities.reset(this.config.deviceName)
+      this.identity = await this.identities.reset(this.deviceName)
       this.serverApi!.bindIdentity(this.identity)
       this.serverConnection = this.createServerConnection(this.identity)
       this.logger.info('Rotated revoked Host identity before account authorization')

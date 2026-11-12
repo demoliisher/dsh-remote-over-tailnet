@@ -122,6 +122,25 @@ export class IdentityStore {
     }
   }
 
+  /**
+   * Rewrite the published device name while keeping the same device ID and key
+   * pair. The identity must already exist: renaming never mints a replacement.
+   */
+  async rename(deviceName: string): Promise<HostIdentity> {
+    if (this.defaultOptions !== undefined) this.storageDirectory = await prepareDefaultIdentityDirectory(this.defaultOptions)
+    await ensureDirectory(this.directory)
+    return withIdentityLock(this.directory, async () => {
+      const devicePath = join(this.directory, 'device.json')
+      const keyPath = join(this.directory, 'device.key')
+      const [hasDevice, hasKey] = await Promise.all([exists(devicePath), exists(keyPath)])
+      if (!hasDevice && !hasKey) throw new IdentityInvalidError('device identity does not exist; start the remote service before renaming it')
+      if (hasDevice !== hasKey) throw new IdentityInvalidError('device identity is incomplete; repair it explicitly before renaming it')
+      const identity = await this.readIdentity(devicePath, keyPath, deviceName)
+      await removeStaleTemporaries(this.directory)
+      return identity
+    })
+  }
+
   private async loadOrCreateLocked(deviceName: string): Promise<HostIdentity> {
     const devicePath = join(this.directory, 'device.json')
     const keyPath = join(this.directory, 'device.key')
