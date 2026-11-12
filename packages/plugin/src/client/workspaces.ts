@@ -1,7 +1,7 @@
 import { renderBodyPortal } from './portal.js'
 import type { LocaleKey, Translate } from '../client-locale.js'
 import type { StatusFeed } from '../status-stream.js'
-import { connectedClientModeLabel, formatPlatform, messageOf, startupErrorMessage } from './presentation.js'
+import { messageOf, startupErrorMessage } from './presentation.js'
 import type {
   ClientReact,
   PluginSettingsView,
@@ -383,25 +383,17 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
               }))
             : null)),
       React.createElement('p', { className: 'dshRemoteHostHint' }, t('remoteServiceHint')),
-      React.createElement('div', { className: 'dshRemoteSectionHeading' },
-        React.createElement('div', { className: 'dshRemoteSectionTitle' },
-          React.createElement('strong', null, t('currentConnectedDevices')),
-          connectedClients.length === 0 ? null : React.createElement('span', { className: 'dshRemoteStatusChip' },
-            t('connectedClientCount', { count: connectedClients.length })))),
-      React.createElement('div', { className: 'dshRemoteClientList', 'aria-label': t('currentConnectedDevices') },
-        connectedClients.length === 0
-          ? React.createElement('p', { className: 'dshRemoteClientEmpty' }, t('connectedClientsEmpty'))
-          : null,
-        ...connectedClients.map(client => React.createElement('div', {
-          key: client.deviceId,
-          className: 'dshRemoteClientRow',
+      host === undefined || host.enabled === false
+        ? null
+        : React.createElement('p', {
+          className: connectedClients.length === 0 ? 'dshRemoteClientStatus' : 'dshRemoteClientStatus isActive',
+          role: 'status',
         },
-          React.createElement('span', { className: 'dshRemoteHostNameLine' },
-            React.createElement('strong', null, client.name.trim() === '' ? t('unknownDevice') : client.name),
-            React.createElement('small', null, [
-              client.platform === undefined ? undefined : formatPlatform(client.platform),
-              connectedClientModeLabel(client.mode, t),
-            ].filter(value => value !== undefined).join(' · ')))))))
+          connectedClients.length === 0
+            ? t('connectedClientsEmpty')
+            : React.createElement(React.Fragment, null,
+              React.createElement('span', { className: 'dshRemoteClientStatusDot', 'aria-hidden': true }),
+              t('connectedClientCount', { count: connectedClients.length }))))
 
     const errorNotice = error === undefined
       ? null

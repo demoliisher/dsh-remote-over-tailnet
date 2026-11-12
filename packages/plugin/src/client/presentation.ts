@@ -58,22 +58,3 @@ export function messageOf(reason: unknown, t: Translate): string {
   return reason instanceof Error ? reason.message : String(reason)
 }
 
-export function formatPlatform(value: string): string {
-  const normalized = value.toLowerCase()
-  if (normalized === 'darwin' || normalized === 'macos') return 'macOS'
-  if (normalized === 'win32' || normalized === 'windows') return 'Windows'
-  if (normalized === 'linux') return 'Linux'
-  if (normalized === 'android') return 'Android'
-  return value
-}
-
-export function connectedClientModeLabel(
-  mode: 'LAN' | 'P2P' | 'TURN' | 'Relay' | undefined,
-  t: Translate,
-): string {
-  if (mode === 'LAN') return t('remoteNetworkLan')
-  if (mode === 'P2P') return t('remoteNetworkP2p')
-  if (mode === 'TURN') return t('remoteNetworkTurn')
-  if (mode === 'Relay') return t('remoteNetworkRelay')
-  return t('connected')
-}
