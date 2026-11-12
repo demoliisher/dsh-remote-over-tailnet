@@ -96,7 +96,8 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     const [relayAccountDraft, setRelayAccountDraft] = React.useState('')
     const [relayPasswordDraft, setRelayPasswordDraft] = React.useState('')
     const [relaySecretVisible, setRelaySecretVisible] = React.useState(false)
-    const [relaySaved, setRelaySaved] = React.useState(false)
+    const [nameSaved, setNameSaved] = React.useState(false)
+    const [credentialsSaved, setCredentialsSaved] = React.useState(false)
     const [deviceNameDraft, setDeviceNameDraft] = React.useState('')
     const pageRef = React.useRef<HTMLElement | null>(null)
     const [error, setError] = React.useState<string | undefined>(undefined)
@@ -134,14 +135,11 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     // feed replays the latest status to a new subscriber.
     React.useEffect(() => props.statusFeed.subscribe(setStatus), [props.statusFeed])
 
-    // 远程服务停用时中继尚未启动，没有可读的账号；这里保留空输入，不显示启动错误。
+    // 服务停用后仍需读取已保存的账号密码，供停服状态下修改。
     const serviceEnabled = status?.host?.enabled
+    const localRelay = status?.tailnet?.relayPort !== undefined
     React.useEffect(() => {
-      if (!open) return undefined
-      if (serviceEnabled === false) {
-        setError(undefined)
-        return undefined
-      }
+      if (!open || !localRelay) return undefined
       let cancelled = false
       void props.control<TailnetCredentialsView | null>('tailnet.credentials')
         .then(credentials => {
@@ -150,7 +148,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
         })
         .catch(reason => { if (!cancelled) setError(messageOf(reason, t)) })
       return () => { cancelled = true }
-    }, [open, props.control, serviceEnabled])
+    }, [open, props.control, serviceEnabled, localRelay])
 
     React.useEffect(() => {
       if (relayCredentials === undefined) return
@@ -189,29 +187,37 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     const trimmedDeviceName = deviceNameDraft.trim()
     const deviceNameChanged = trimmedDeviceName !== (status?.deviceName ?? '')
     const deviceNameValid = trimmedDeviceName !== '' && trimmedDeviceName.length <= 80
-    // 名称单独保存也能生效；账号密码只有填写完整且确实变化时才提交。
+    // 名称随时可改；账号密码只在远程服务停止时提交，下次启动才生效。
     const credentialsChanged = !relayDraftUnchanged && relayAccountDraft.trim() !== '' && relayPasswordDraft !== ''
-    // 保存后 Host 用新凭据重启中继并重新登录本机，客户端要重连一次。
-    const saveConnectionSettings = async (): Promise<void> => {
-      if (!deviceNameValid) return
-      if (!deviceNameChanged && !credentialsChanged) return
+    const credentialsLocked = serviceEnabled !== false
+    const saveDeviceName = async (): Promise<void> => {
+      if (!deviceNameValid || !deviceNameChanged) return
       setBusy(true)
       setError(undefined)
-      setRelaySaved(false)
+      setNameSaved(false)
       try {
-        if (deviceNameChanged) {
-          const nextStatus = await props.control<RemoteStatus>('settings.deviceName.set', { deviceName: trimmedDeviceName })
-          setStatus(nextStatus)
-          setDeviceNameDraft(nextStatus.deviceName ?? trimmedDeviceName)
-        }
-        if (credentialsChanged) {
-          const nextCredentials = { account: relayAccountDraft.trim(), password: relayPasswordDraft }
-          await props.control('tailnet.credentials.update', nextCredentials)
-          setRelayCredentials(nextCredentials)
-        }
-        setStatus(await props.control<RemoteStatus>('status'))
-        setRelaySaved(true)
-        window.setTimeout(() => setRelaySaved(false), 2500)
+        const nextStatus = await props.control<RemoteStatus>('settings.deviceName.set', { deviceName: trimmedDeviceName })
+        setStatus(nextStatus)
+        setDeviceNameDraft(nextStatus.deviceName ?? trimmedDeviceName)
+        setNameSaved(true)
+        window.setTimeout(() => setNameSaved(false), 2500)
+      } catch (reason) {
+        setError(messageOf(reason, t))
+      } finally {
+        setBusy(false)
+      }
+    }
+    const saveRelayCredentials = async (): Promise<void> => {
+      if (credentialsLocked || !credentialsChanged) return
+      setBusy(true)
+      setError(undefined)
+      setCredentialsSaved(false)
+      try {
+        const nextCredentials = { account: relayAccountDraft.trim(), password: relayPasswordDraft }
+        await props.control('tailnet.credentials.save', nextCredentials)
+        setRelayCredentials(nextCredentials)
+        setCredentialsSaved(true)
+        window.setTimeout(() => setCredentialsSaved(false), 2500)
       } catch (reason) {
         setError(messageOf(reason, t))
       } finally {
@@ -325,19 +331,31 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
       React.createElement('div', { className: 'dshRemoteRelayFields' },
         React.createElement('label', { className: 'dshRemoteRelayFieldWide' },
           React.createElement('span', { className: 'dshRemoteRelayFieldLabel' }, t('hostName')),
-          React.createElement('input', {
-            type: 'text',
-            value: deviceNameDraft,
-            maxLength: 80,
-            autoComplete: 'off',
-            onChange: (event: Event) => setDeviceNameDraft((event.target as HTMLInputElement).value),
-          })),
+          React.createElement('div', { className: 'dshRemoteRelayNameRow' },
+            React.createElement('input', {
+              type: 'text',
+              value: deviceNameDraft,
+              maxLength: 80,
+              autoComplete: 'off',
+              onChange: (event: Event) => setDeviceNameDraft((event.target as HTMLInputElement).value),
+              onKeyDown: (event: KeyboardEvent) => {
+                if (event.key === 'Enter') void saveDeviceName()
+              },
+            }),
+            nameSaved ? React.createElement('span', { className: 'dshRemoteRelaySaved' }, t('tailnetNameSaved')) : null,
+            React.createElement('button', {
+              type: 'button',
+              className: 'dshRemoteSecondaryButton',
+              disabled: busy || !deviceNameValid || !deviceNameChanged,
+              onClick: () => void saveDeviceName(),
+            }, t(busy ? 'saving' : 'tailnetSaveName')))),
         React.createElement('label', null,
           React.createElement('span', { className: 'dshRemoteRelayFieldLabel' }, t('tailnetAccount')),
           React.createElement('input', {
             type: 'email',
             value: relayAccountDraft,
             autoComplete: 'username',
+            readOnly: credentialsLocked,
             onChange: (event: Event) => setRelayAccountDraft((event.target as HTMLInputElement).value),
           })),
         React.createElement('label', null,
@@ -347,6 +365,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
               type: relaySecretVisible ? 'text' : 'password',
               value: relayPasswordDraft,
               autoComplete: 'current-password',
+              readOnly: credentialsLocked,
               onChange: (event: Event) => setRelayPasswordDraft((event.target as HTMLInputElement).value),
             }),
             React.createElement('button', {
@@ -356,14 +375,16 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
               'aria-label': t(relaySecretVisible ? 'tailnetHideSecret' : 'tailnetShowSecret'),
               onClick: () => setRelaySecretVisible(visible => !visible),
             }, eyeIcon(relaySecretVisible))))),
+      React.createElement('p', { className: 'dshRemoteRelayNotice' },
+        t(credentialsLocked ? 'tailnetCredentialsLocked' : 'tailnetCredentialsPending')),
       React.createElement('div', { className: 'dshRemoteRelayFooterRow' },
         relayAddressField,
         React.createElement('div', { className: 'dshRemoteRelayActions' },
-          relaySaved ? React.createElement('span', { className: 'dshRemoteRelaySaved' }, t('tailnetCredentialsSaved')) : null,
+          credentialsSaved ? React.createElement('span', { className: 'dshRemoteRelaySaved' }, t('tailnetCredentialsSaved')) : null,
           React.createElement('button', {
             type: 'button',
-            disabled: busy || !deviceNameValid || (!deviceNameChanged && !credentialsChanged),
-            onClick: () => void saveConnectionSettings(),
+            disabled: credentialsLocked || busy || !credentialsChanged,
+            onClick: () => void saveRelayCredentials(),
           }, t(busy ? 'saving' : 'tailnetSaveCredentials')))))
 
     const host = status?.host

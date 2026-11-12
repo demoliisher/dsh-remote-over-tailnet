@@ -109,7 +109,7 @@ describe('PluginControlRuntime device name', () => {
       currentName = deviceName
       return hostStatus({ deviceName })
     })
-    const tailnet = tailnetStub({ credentials: { account: 'relay@example.test', password: 'relay-password' } })
+    const tailnet = tailnetStub({ snapshot: tailnetSnapshot(), credentials: { account: 'relay@example.test', password: 'relay-password' } })
     const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, hostStub({
       hostStatus: () => hostStatus({ deviceName: currentName }),
       renameHost,
@@ -117,7 +117,7 @@ describe('PluginControlRuntime device name', () => {
 
     await expect(handler('settings.deviceName.set', { deviceName: '  workbench  ' }, signal())).resolves.toMatchObject({
       ok: true,
-      value: { deviceName: 'workbench' },
+      value: { deviceName: 'workbench', tailnet: { phase: 'ready' } },
     })
     expect(settings.get().deviceName).toBe('workbench')
     expect(renameHost).toHaveBeenCalledWith('workbench', { account: 'relay@example.test', password: 'relay-password' })
@@ -291,13 +291,13 @@ describe('PluginControlRuntime remote service', () => {
 })
 
 describe('PluginControlRuntime tailnet', () => {
-  it('reads and updates the relay credentials', async () => {
+  it('reads and saves the relay credentials without touching the host', async () => {
     const snapshot = tailnetSnapshot()
     const updatedSnapshot = { ...tailnetSnapshot(), relayPort: 9090 }
     const tailnet = tailnetStub({
       snapshot,
       credentials: { account: 'relay@example.test', password: 'relay-password' },
-      updateCredentials: vi.fn(async () => updatedSnapshot),
+      saveCredentials: vi.fn(async () => updatedSnapshot),
     })
     const authorizeHostWithAccount = vi.fn(async () => ({ method: 'account' }))
     const host = hostStub({ authorizeHostWithAccount })
@@ -309,26 +309,25 @@ describe('PluginControlRuntime tailnet', () => {
     })
     expect(await handler('tailnet.status', {}, signal())).toMatchObject({ ok: true, value: snapshot })
 
-    await expect(handler('tailnet.credentials.update', { account: ' new@example.test ', password: 'new-password' }, signal()))
+    await expect(handler('tailnet.credentials.save', { account: ' new@example.test ', password: 'new-password' }, signal()))
       .resolves.toMatchObject({ ok: true, value: updatedSnapshot })
-    expect(tailnet.updateCredentials).toHaveBeenCalledWith({ account: 'new@example.test', password: 'new-password' })
-    expect(authorizeHostWithAccount).toHaveBeenCalledWith('new@example.test', 'new-password')
-    expect(tailnet.reportAuthorized).toHaveBeenCalledOnce()
+    expect(tailnet.saveCredentials).toHaveBeenCalledWith({ account: 'new@example.test', password: 'new-password' })
+    expect(authorizeHostWithAccount).not.toHaveBeenCalled()
+    expect(tailnet.reportAuthorized).not.toHaveBeenCalled()
 
-    const updated = tailnetStub({ updateCredentials: vi.fn(async () => snapshot) })
+    const updated = tailnetStub({ saveCredentials: vi.fn(async () => snapshot) })
     const withoutHost = register(new PluginControlRuntime(resolveConfig({}), undefined, undefined, updated))
-    await expect(withoutHost('tailnet.credentials.update', { account: 'a@example.test', password: 'pw' }, signal()))
+    await expect(withoutHost('tailnet.credentials.save', { account: 'a@example.test', password: 'pw' }, signal()))
       .resolves.toMatchObject({ ok: true, value: snapshot })
-    expect(authorizeHostWithAccount).toHaveBeenCalledTimes(1)
 
-    await expect(handler('tailnet.credentials.update', { account: 'a@example.test', password: '' }, signal()))
+    await expect(handler('tailnet.credentials.save', { account: 'a@example.test', password: '' }, signal()))
       .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'INVALID_MESSAGE' } } })
-    expect(tailnet.updateCredentials).toHaveBeenCalledTimes(1)
+    expect(tailnet.saveCredentials).toHaveBeenCalledTimes(1)
 
-    const failing = tailnetStub({ updateCredentials: vi.fn(async () => { throw new Error('relay restart failed') }), credentials: { account: 'a@example.test', password: 'pw' } })
+    const failing = tailnetStub({ saveCredentials: vi.fn(async () => { throw new Error('relay credentials failed') }), credentials: { account: 'a@example.test', password: 'pw' } })
     const failingHandler = register(new PluginControlRuntime(resolveConfig({}), undefined, hostStub(), failing))
-    await expect(failingHandler('tailnet.credentials.update', { account: 'a@example.test', password: 'pw' }, signal()))
-      .resolves.toMatchObject({ ok: false, error: { message: 'relay restart failed' } })
+    await expect(failingHandler('tailnet.credentials.save', { account: 'a@example.test', password: 'pw' }, signal()))
+      .resolves.toMatchObject({ ok: false, error: { message: 'relay credentials failed' } })
 
     await expect(handler('tailnet.credentials', {}, signal())).resolves.toMatchObject({ ok: true })
     const disabled = register(new PluginControlRuntime(resolveConfig({}), undefined, hostStub()))
@@ -461,7 +460,7 @@ function tailnetSnapshot(): TailnetSnapshot {
 function tailnetStub(options: {
   snapshot?: TailnetSnapshot
   credentials?: { account: string; password: string }
-  updateCredentials?: TailnetControl['updateCredentials']
+  saveCredentials?: TailnetControl['saveCredentials']
   relayReady?: boolean
 } = {}): TailnetControl {
   return {
@@ -470,7 +469,7 @@ function tailnetStub(options: {
     relayReady: vi.fn(() => options.relayReady ?? true),
     snapshot: vi.fn(() => options.snapshot),
     credentials: vi.fn(() => options.credentials),
-    updateCredentials: options.updateCredentials ?? vi.fn(async () => options.snapshot),
+    saveCredentials: options.saveCredentials ?? vi.fn(async () => options.snapshot),
     reportAuthorized: vi.fn(),
     reportAuthorizeFailure: vi.fn(),
   }

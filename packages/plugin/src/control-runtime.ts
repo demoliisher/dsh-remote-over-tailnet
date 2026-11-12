@@ -104,16 +104,16 @@ export class PluginControlRuntime {
       if (endpoint === 'settings.development.set') return ok(await this.setDevelopment(payload))
       if (endpoint === 'settings.appearance.set') return ok(await this.setAppearance(payload))
       if (endpoint === 'settings.get') return ok(this.settingsView())
-      if (endpoint === 'service.set') return ok(await this.setService(payload))
-      if (endpoint === 'settings.deviceName.set') return ok(await this.setDeviceName(payload))
+      if (endpoint === 'service.set') return this.withTailnet(ok(await this.setService(payload)))
+      if (endpoint === 'settings.deviceName.set') return this.withTailnet(ok(await this.setDeviceName(payload)))
       if (endpoint === 'host.reconnect') {
         if (this.host === undefined) throw new ControlError('METHOD_NOT_ALLOWED', '插件当前没有运行 Host。')
         this.host.reconnectHost()
-        return ok(this.hostOnlyStatus())
+        return this.withTailnet(ok(this.hostOnlyStatus()))
       }
       if (endpoint === 'tailnet.status') return ok(this.tailnet?.snapshot() ?? null)
       if (endpoint === 'tailnet.credentials') return ok(this.credentials())
-      if (endpoint === 'tailnet.credentials.update') return ok(await this.updateCredentials(payload))
+      if (endpoint === 'tailnet.credentials.save') return ok(await this.saveCredentials(payload))
       if (endpoint === 'status') {
         if (this.startupFailure !== undefined) {
           return this.withTailnet(ok({
@@ -174,23 +174,14 @@ export class PluginControlRuntime {
     return this.hostOnlyStatus()
   }
 
-  private async updateCredentials(payload: unknown): Promise<unknown> {
+  /** 远程服务停止时保存账号密码；启动服务时再读取新凭据并完成 Host 授权。 */
+  private async saveCredentials(payload: unknown): Promise<unknown> {
     if (this.tailnet === undefined) throw new ControlError('METHOD_NOT_ALLOWED', 'Tailscale 组网未启用。')
     const value = record(payload)
     if (typeof value.account !== 'string' || value.account.trim() === '' || typeof value.password !== 'string' || value.password === '') {
       throw new ControlError('INVALID_MESSAGE', '中继邮箱与密码不能为空。')
     }
-    const credentials = { account: value.account.trim(), password: value.password }
-    const snapshot = await this.tailnet.updateCredentials(credentials)
-    if (this.host !== undefined) {
-      try {
-        await this.host.authorizeHostWithAccount(credentials.account, credentials.password)
-        this.tailnet.reportAuthorized()
-      } catch (error) {
-        this.tailnet.reportAuthorizeFailure(error)
-        throw error
-      }
-    }
+    const snapshot = await this.tailnet.saveCredentials({ account: value.account.trim(), password: value.password })
     return snapshot ?? null
   }
 
