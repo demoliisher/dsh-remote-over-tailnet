@@ -16,24 +16,22 @@ export interface TailnetStepView {
   detail: string
 }
 
-/** Host 侧 Tailscale 组网与内置中继的状态快照（不含密码）。 */
+/** Host 侧内嵌节点与内置中继的状态快照（不含密码）。 */
 export interface TailnetView {
   enabled: boolean
-  phase: 'disabled' | 'probing' | 'starting' | 'ready' | 'error'
+  phase: 'disabled' | 'probing' | 'starting' | 'auth-required' | 'ready' | 'error'
   dnsName?: string
   publicUrl?: string
   relayPort?: number
   relayPid?: number
-  serveTarget?: string
-  serveChanged?: boolean
-  httpsCertificateReady?: boolean
-  tailscaleBinary?: string
+  /** 节点尚未登录时交给用户点击的 Tailscale 授权链接。 */
+  authUrl?: string
   account?: string
   logPath?: string
   steps: {
-    tailscale: TailnetStepView
+    node: TailnetStepView
     relay: TailnetStepView
-    serve: TailnetStepView
+    listen: TailnetStepView
     authorize: TailnetStepView
   }
   error?: { code: string; message: string; actionUrl?: string }
@@ -106,7 +104,7 @@ export interface PluginSettings {
   terminal?: { enabled?: boolean }
   sidebar?: { entry?: SidebarEntryStyle }
   service?: { enabled?: boolean }
-  tailnet?: { enabled?: boolean; dataDirectory?: string; servePort?: number }
+  tailnet?: { enabled?: boolean; dataDirectory?: string; authKey?: string }
 }
 
 export interface PluginSettingsView {

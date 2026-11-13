@@ -2,9 +2,12 @@ import type { ResolvedConfig } from '../config.js'
 import type { SafeLogger } from '../logging.js'
 import { join } from 'node:path'
 import { loadOrCreateRelayCredentials, saveRelayCredentials, type RelayCredentials } from './credentials.js'
-import { detectTailnet, httpsCertificateReady, tailnetHttpsUrl } from './detect.js'
-import { ensureServe, removeServe, ServeError } from './serve.js'
+import type { TsnetNode, TsnetNodeStatus } from './embedded-node.js'
+import { connectEmbeddedNode } from './embedded-node.js'
 import { RelayError, relayLogPath, startRelay, type RelayHandle } from './relay.js'
+
+/** 节点在 tailnet 里的固定名称，对外地址形如 http://dsh-remote.<tailnet>.ts.net:<端口>。 */
+export const TAILNET_NODE_HOSTNAME = 'dsh-remote'
 
 /** 面板上展示的单个步骤状态；ok 为 null 表示还没走到这一步。 */
 export interface TailnetStep {
@@ -13,12 +16,12 @@ export interface TailnetStep {
 }
 
 export interface TailnetSteps {
-  /** 系统 Tailscale 是否可用。 */
-  tailscale: TailnetStep
+  /** 内嵌节点是否已加入 tailnet。 */
+  node: TailnetStep
   /** 本地中继 server 是否运行。 */
   relay: TailnetStep
-  /** 公共 HTTPS 地址是否已转发到本地中继。 */
-  serve: TailnetStep
+  /** 节点是否已在 tailnet 端口监听并转发到本地中继。 */
+  listen: TailnetStep
   /** Host 设备是否已用中继账号完成授权。 */
   authorize: TailnetStep
 }
@@ -29,7 +32,7 @@ export interface TailnetErrorInfo {
   actionUrl?: string
 }
 
-export type TailnetPhase = 'disabled' | 'probing' | 'starting' | 'ready' | 'error'
+export type TailnetPhase = 'disabled' | 'probing' | 'starting' | 'auth-required' | 'ready' | 'error'
 
 /** 面板与状态接口共用的快照；不含密码。 */
 export interface TailnetSnapshot {
@@ -39,10 +42,8 @@ export interface TailnetSnapshot {
   publicUrl?: string
   relayPort?: number
   relayPid?: number
-  serveTarget?: string
-  serveChanged?: boolean
-  httpsCertificateReady?: boolean
-  tailscaleBinary?: string
+  /** 节点尚未登录时，交给用户点击的 Tailscale 授权链接。 */
+  authUrl?: string
   account?: string
   logPath?: string
   steps: TailnetSteps
@@ -56,11 +57,11 @@ export interface TailnetControl {
   credentials(): RelayCredentials | undefined
   /** 远程服务停止时保存中继账号密码，供下次启动使用。 */
   saveCredentials(credentials: RelayCredentials): Promise<TailnetSnapshot | undefined>
-  /** 启动本地中继与 Tailscale 转发；失败写入快照，不抛出。 */
+  /** 启动内嵌节点与本地中继；失败写入快照，不抛出。 */
   start(): Promise<void>
-  /** 停止中继并移除 Tailscale 转发，快照转为已停止。 */
+  /** 停止中继并关闭节点，快照转为已停止。 */
   stop(): Promise<void>
-  /** 中继与对外转发都已就绪。 */
+  /** 中继与对外监听都已就绪。 */
   relayReady(): boolean
   /** 记录 Host 授权结果，供面板展示。 */
   reportAuthorized(): void
@@ -73,10 +74,12 @@ export interface TailnetOrchestratorOptions {
   logger: SafeLogger
   /** 未在配置里指定 tailnet.dataDirectory 时使用的中继目录。 */
   defaultDataDirectory: () => string
-  /** 插件包根目录，其中含 server/ 产物目录。 */
+  /** 插件包根目录，其中含 server/ 与 tsnet/ 产物目录。 */
   packageRoot: string
   /** 本插件版本，用于校验中继产物。 */
   pluginVersion: string
+  /** 节点就绪、可以授权 Host 时回调；授权结果由回调自己写回快照。 */
+  onReady?: () => void | Promise<void>
 }
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
@@ -84,8 +87,9 @@ const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
 /**
  * 需要插件自己做中继时返回端口，否则返回 undefined。
  *
- * 只有「http + 回环地址」才由插件编排：中继本身只监听 127.0.0.1，对外由 tailscale serve
- * 提供 https；若 serverUrl 是 https 或局域网地址，说明用户在用外部服务器，插件保持上游行为。
+ * 只有「http + 回环地址」才由插件编排：中继本身只监听 127.0.0.1，对外由内嵌节点
+ * 在 tailnet 上监听同一端口；若 serverUrl 是 https 或局域网地址，说明用户在用外部服务器，
+ * 插件保持上游行为。
  */
 export function tailnetRelayPort(serverUrl: string | undefined): number | undefined {
   if (serverUrl === undefined) return undefined
@@ -96,14 +100,14 @@ export function tailnetRelayPort(serverUrl: string | undefined): number | undefi
   return Number(url.port)
 }
 
-/** 由 DNSName 与 serve 端口生成对外地址。 */
-function publicUrlFor(dnsName: string, servePort: number): string {
-  return servePort === 443 ? 'https://' + dnsName : 'https://' + dnsName + ':' + String(servePort)
+/** 去掉 DNSName 末尾的点，生成对外地址。 */
+function publicUrlFor(dnsName: string, relayPort: number): string {
+  return 'http://' + dnsName.replace(/\.$/, '') + ':' + String(relayPort)
 }
 
 /**
- * 阶段一编排：检测系统 Tailscale → 生成/读取中继账号密码 → 固定端口起中继 →
- * 幂等确保 tailscale serve → 等 Host 设备授权。
+ * 编排内嵌节点与本地中继：启动 wasm 节点 → 等待加入 tailnet（必要时给出授权链接）→
+ * 固定端口起中继 → 在 tailnet 同端口监听并转发到中继 → 等 Host 设备授权。
  *
  * 失败不抛出：把错误写进快照，面板展示可操作的中文提示，插件其余部分继续运行。
  */
@@ -111,6 +115,9 @@ export class TailnetOrchestrator implements TailnetControl {
   private state?: TailnetSnapshot
   private relayCredentials?: RelayCredentials
   private relay?: RelayHandle
+  private node?: TsnetNode
+  private listeningPort?: number
+  private advanceTimer?: NodeJS.Timeout
   private disposed = false
 
   constructor(private readonly options: TailnetOrchestratorOptions) {}
@@ -124,9 +131,9 @@ export class TailnetOrchestrator implements TailnetControl {
     return this.relayCredentials === undefined ? undefined : { ...this.relayCredentials }
   }
 
-  /** 中继已就绪且对外地址可用。 */
+  /** 中继已就绪且节点已在 tailnet 端口监听。 */
   relayReady(): boolean {
-    return this.relay !== undefined && this.state?.steps.serve.ok === true
+    return this.relay !== undefined && this.state?.steps.listen.ok === true
   }
 
   /** 中继状态、日志、账号密码与 state.json 所在目录。 */
@@ -134,7 +141,12 @@ export class TailnetOrchestrator implements TailnetControl {
     return this.options.config.tailnet.dataDirectory ?? this.options.defaultDataDirectory()
   }
 
-  /** 切换服务器地址后重建中继；失败同样只写快照，不抛出。 */
+  /** 内嵌节点的状态目录，Tailscale 的密钥与数据库落在这里。 */
+  nodeDirectory(): string {
+    return join(this.dataDirectory(), 'node')
+  }
+
+  /** 切换服务器地址后重建中继与节点；失败同样只写快照，不抛出。 */
   async restart(config: ResolvedConfig): Promise<void> {
     await this.stop()
     this.disposed = false
@@ -175,7 +187,7 @@ export class TailnetOrchestrator implements TailnetControl {
     const relayPort = tailnetRelayPort(config.serverUrl)
     this.state = this.initialSnapshot(relayPort)
     if (!config.tailnet.enabled) {
-      this.disabled('已在设置中关闭 Tailscale 组网，未启动本地中继。')
+      this.disabled('已在设置中关闭内嵌节点，未启动本地中继。')
       return
     }
     if (config.serverUrl === undefined || relayPort === undefined) {
@@ -183,91 +195,159 @@ export class TailnetOrchestrator implements TailnetControl {
       return
     }
     this.state.phase = 'probing'
+    this.state.steps.node = { ok: null, detail: '正在启动内嵌节点' }
     this.publish()
     try {
-      this.state.steps.tailscale = { ok: null, detail: '正在检测 Tailscale 状态' }
-      this.publish()
-      const tailnet = await detectTailnet({ commandTimeoutMs: 15_000 })
-      if (tailnet.error !== undefined) {
-        this.state.steps.tailscale = { ok: false, detail: tailnet.error.message }
-        throw new TailnetOrchestrationError(tailnet.error.code, tailnet.error.message, tailnet.error.actionUrl)
-      }
-      if (tailnet.dnsName === undefined || tailnet.binary === null) {
-        const message = 'Tailscale 已运行，但没有拿到设备域名（DNSName）。请检查 MagicDNS 设置。'
-        this.state.steps.tailscale = { ok: false, detail: message }
-        throw new TailnetOrchestrationError('TAILNET_NO_DNS_NAME', message, 'https://login.tailscale.com/admin/dns')
-      }
-      const dnsName = tailnet.dnsName
-      const servePort = config.tailnet.servePort
-      const publicUrl = publicUrlFor(dnsName, servePort)
-      const httpsReady = httpsCertificateReady(tailnet)
-      this.state = {
-        ...this.state,
-        dnsName,
-        publicUrl,
-        relayPort,
-        tailscaleBinary: tailnet.binary,
-        httpsCertificateReady: httpsReady,
-        steps: {
-          ...this.state.steps,
-          tailscale: {
-            ok: true,
-            detail: 'Tailscale 已连接，设备域名 ' + dnsName + (httpsReady ? '' : '（HTTPS 证书尚未启用）'),
-          },
-        },
-      }
-      this.publish()
-
       this.relayCredentials = await loadOrCreateRelayCredentials(this.dataDirectory())
       this.state.account = this.relayCredentials.account
-      this.state.steps.relay = { ok: null, detail: '正在启动本地中继' }
-      this.state.phase = 'starting'
-      this.publish()
-      this.relay = await startRelay({
-        serverRoot: join(this.options.packageRoot, 'server'),
-        pluginVersion: this.options.pluginVersion,
-        dataDirectory: this.dataDirectory(),
-        port: relayPort,
-        publicUrl,
-        account: this.relayCredentials.account,
-        password: this.relayCredentials.password,
-        logger,
-        onExit: info => this.onRelayExit(info),
+      const node = await connectEmbeddedNode(this.options.packageRoot)
+      this.node = node
+      const status = await node.start({
+        dir: this.nodeDirectory(),
+        hostname: TAILNET_NODE_HOSTNAME,
+        ...(config.tailnet.authKey === undefined ? {} : { authKey: config.tailnet.authKey }),
       })
-      this.state.relayPid = this.relay.pid
-      this.state.logPath = relayLogPath(this.dataDirectory())
-      this.state.steps.relay = { ok: true, detail: '中继运行在 127.0.0.1:' + String(relayPort) }
-      this.publish()
-
-      this.state.steps.serve = { ok: null, detail: '正在配置 tailscale serve' }
-      this.publish()
-      const target = 'http://127.0.0.1:' + String(relayPort)
-      const serve = await ensureServe(tailnet.binary, dnsName, {
-        target,
-        servePort,
-        applyTimeoutMs: 180_000,
-      })
-      this.state.serveTarget = target
-      this.state.serveChanged = serve.changed
-      this.state.steps.serve = {
-        ok: true,
-        detail: serve.changed
-          ? '已把 ' + publicUrl + ' 转发到 ' + target
-          : publicUrl + ' 已转发到 ' + target,
+      const phase = this.applyStatus(status, relayPort)
+      if (phase === 'auth-required') {
+        this.scheduleAdvance(relayPort)
+        logger.info('tailnet node needs authorization', { authUrl: this.state.authUrl ?? '' })
+        return
       }
-      this.state.httpsCertificateReady = true
+      await this.completeSetup(relayPort)
+    } catch (error) {
+      this.fail(error)
+    }
+  }
+
+  /** 节点在等用户点授权链接时继续轮询，授权完成后自动推进到就绪。 */
+  private scheduleAdvance(relayPort: number): void {
+    if (this.advanceTimer !== undefined) clearInterval(this.advanceTimer)
+    this.advanceTimer = setInterval(() => this.advance(relayPort), 1000)
+  }
+
+  private advance(relayPort: number): void {
+    const node = this.node
+    if (this.disposed || node === undefined) {
+      this.clearAdvance()
+      return
+    }
+    this.applyStatus(node.status(), relayPort)
+    if (this.state?.phase === 'starting' && this.state.steps.node.ok === true) {
+      this.clearAdvance()
+      void this.completeSetup(relayPort)
+    }
+  }
+
+  private clearAdvance(): void {
+    if (this.advanceTimer === undefined) return
+    clearInterval(this.advanceTimer)
+    this.advanceTimer = undefined
+  }
+
+  /** 把节点状态映射到面板阶段：等授权、已加入或仍在启动，返回映射后的阶段。 */
+  private applyStatus(status: TsnetNodeStatus, relayPort: number): TailnetPhase {
+    if (this.state === undefined) return 'disabled'
+    const backend = status.backendState ?? 'NoState'
+    if (backend !== 'Running' && status.authURL !== undefined && status.authURL !== '') {
+      this.state.phase = 'auth-required'
+      this.state.authUrl = status.authURL
+      this.state.steps.node = { ok: null, detail: '等待在浏览器里完成 Tailscale 授权' }
+      this.publish()
+      return this.state.phase
+    }
+    if (backend === 'Running' && status.dnsName !== undefined) {
+      const dnsName = status.dnsName.replace(/\.$/, '')
+      this.state.phase = 'starting'
+      this.state.authUrl = undefined
+      this.state.dnsName = dnsName
+      this.state.publicUrl = publicUrlFor(dnsName, relayPort)
+      this.state.steps.node = { ok: true, detail: '节点已加入 tailnet：' + dnsName }
+      this.publish()
+      return this.state.phase
+    }
+    this.state.steps.node = { ok: null, detail: '节点状态：' + backend }
+    this.publish()
+    return this.state.phase
+  }
+
+  /** 节点入网后起中继并在 tailnet 端口监听，最后回调上层完成 Host 授权。 */
+  private async completeSetup(relayPort: number): Promise<void> {
+    const { logger } = this.options
+    if (this.state === undefined) return
+    try {
+      const credentials = this.relayCredentials
+      if (credentials === undefined) {
+        throw new TailnetOrchestrationError('TAILNET_NO_CREDENTIALS', '尚未生成中继账号密码，无法启动本地中继。')
+      }
+      const publicUrl = this.state.publicUrl
+      if (publicUrl === undefined) {
+        throw new TailnetOrchestrationError('TAILNET_NO_DNS_NAME', '内嵌节点已运行，但没有拿到设备域名。请检查 MagicDNS 设置。', 'https://login.tailscale.com/admin/dns')
+      }
+      if (this.relay === undefined) {
+        this.state.steps.relay = { ok: null, detail: '正在启动本地中继' }
+        this.publish()
+        this.relay = await startRelay({
+          serverRoot: join(this.options.packageRoot, 'server'),
+          pluginVersion: this.options.pluginVersion,
+          dataDirectory: this.dataDirectory(),
+          port: relayPort,
+          publicUrl,
+          account: credentials.account,
+          password: credentials.password,
+          logger,
+          onExit: info => this.onRelayExit(info),
+        })
+        this.state.relayPid = this.relay.pid
+        this.state.logPath = relayLogPath(this.dataDirectory())
+        this.state.steps.relay = { ok: true, detail: '中继运行在 127.0.0.1:' + String(relayPort) }
+        this.publish()
+      }
+      const node = this.node
+      if (node === undefined) {
+        throw new TailnetOrchestrationError('TAILNET_NODE_STOPPED', '内嵌节点已停止，无法监听 tailnet 端口。')
+      }
+      if (this.listeningPort !== relayPort) {
+        this.state.steps.listen = { ok: null, detail: '正在 tailnet 端口 ' + String(relayPort) + ' 监听' }
+        this.publish()
+        await node.listen(relayPort, relayPort)
+        this.listeningPort = relayPort
+      }
+      await this.waitForRelay(publicUrl + '/health')
+      this.state.steps.listen = {
+        ok: true,
+        detail: '已在 ' + publicUrl + ' 监听并转发到 127.0.0.1:' + String(relayPort),
+      }
       this.state.steps.authorize = { ok: null, detail: '等待 Host 设备授权' }
       this.state.phase = 'ready'
+      this.state.error = undefined
       this.publish()
-      logger.info('tailnet relay ready', { publicUrl, relayPort, servePort })
+      logger.info('tailnet node ready', { publicUrl, relayPort })
+      await this.options.onReady?.()
     } catch (error) {
-      const info = toTailnetError(error)
-      this.state.error = info
-      this.state.phase = 'error'
-      this.markFailedStep(info)
-      this.publish()
-      logger.warn('tailnet orchestration failed', { code: info.code, message: info.message })
+      this.fail(error)
     }
+  }
+
+  /** 经节点自己访问中继健康检查，确认 tailnet 入站链路已经通到本机中继。 */
+  private async waitForRelay(url: string): Promise<void> {
+    const deadline = Date.now() + 15_000
+    let lastError = ''
+    while (Date.now() < deadline) {
+      const node = this.node
+      if (node === undefined) throw new TailnetOrchestrationError('TAILNET_NODE_STOPPED', '内嵌节点已停止，无法确认通知地址。')
+      try {
+        const response = await node.probe(url)
+        if (response.status === 200) return
+        lastError = 'HTTP ' + String(response.status)
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error)
+      }
+      await new Promise<void>(resolve => setTimeout(resolve, 500))
+    }
+    throw new TailnetOrchestrationError(
+      'TAILNET_LISTEN_UNREACHABLE',
+      '内嵌节点已在 tailnet 端口监听，但经节点访问本机中继失败：' + lastError,
+    )
   }
 
   /** Host 已授权（或本就无需授权）。 */
@@ -284,20 +364,17 @@ export class TailnetOrchestrator implements TailnetControl {
     this.publish()
   }
 
-  reportAuthorizeSkipped(detail: string): void {
-    if (this.state === undefined) return
-    this.state.steps.authorize = { ok: null, detail }
-    this.publish()
-  }
-
   async stop(): Promise<void> {
     this.disposed = true
+    this.clearAdvance()
     const relay = this.relay
     this.relay = undefined
     if (relay !== undefined) await relay.stop()
-    const binary = this.state?.tailscaleBinary
+    const node = this.node
+    this.node = undefined
+    this.listeningPort = undefined
+    if (node !== undefined) await node.close()
     this.markStopped('远程服务已关闭。')
-    if (binary !== undefined) await removeServe(binary, { servePort: this.options.config.tailnet.servePort })
   }
 
   /** 停止后保留域名与地址，面板显示已停止而不是错误。 */
@@ -308,13 +385,12 @@ export class TailnetOrchestrator implements TailnetControl {
       enabled: false,
       phase: 'disabled',
       relayPid: undefined,
-      serveTarget: undefined,
-      serveChanged: false,
+      authUrl: undefined,
       error: undefined,
       steps: {
-        tailscale: base.steps.tailscale,
+        node: { ok: null, detail: '未运行' },
         relay: { ok: null, detail: '未运行' },
-        serve: { ok: null, detail: '未转发' },
+        listen: { ok: null, detail: '未监听' },
         authorize: { ok: null, detail },
       },
       updatedAt: new Date().toISOString(),
@@ -328,9 +404,9 @@ export class TailnetOrchestrator implements TailnetControl {
       phase: 'probing',
       ...(relayPort === undefined ? {} : { relayPort }),
       steps: {
-        tailscale: { ok: null, detail: '未检测' },
+        node: { ok: null, detail: '未启动' },
         relay: { ok: null, detail: '未启动' },
-        serve: { ok: null, detail: '未配置' },
+        listen: { ok: null, detail: '未监听' },
         authorize: { ok: null, detail: '未授权' },
       },
       updatedAt: new Date().toISOString(),
@@ -342,9 +418,9 @@ export class TailnetOrchestrator implements TailnetControl {
     this.state.enabled = false
     this.state.phase = 'disabled'
     this.state.steps = {
-      tailscale: { ok: null, detail },
+      node: { ok: null, detail },
       relay: { ok: null, detail: '未启动' },
-      serve: { ok: null, detail: '未配置' },
+      listen: { ok: null, detail: '未监听' },
       authorize: { ok: null, detail: '不需要' },
     }
     this.publish()
@@ -354,14 +430,25 @@ export class TailnetOrchestrator implements TailnetControl {
   private markFailedStep(info: TailnetErrorInfo): void {
     if (this.state === undefined) return
     const steps = this.state.steps
-    const target = steps.tailscale.ok === false ? 'tailscale'
+    const target = steps.node.ok === false ? 'node'
       : steps.relay.ok === false ? 'relay'
-        : steps.serve.ok === false ? 'serve' : undefined
+        : steps.listen.ok === false ? 'listen' : undefined
     if (target === undefined) {
       steps.relay = { ok: false, detail: info.message }
       return
     }
     steps[target] = { ok: false, detail: info.message }
+  }
+
+  private fail(error: unknown): void {
+    if (this.state === undefined) return
+    const info = toTailnetError(error)
+    this.clearAdvance()
+    this.state.error = info
+    this.state.phase = 'error'
+    this.markFailedStep(info)
+    this.publish()
+    this.options.logger.warn('tailnet orchestration failed', { code: info.code, message: info.message })
   }
 
   private onRelayExit(info: { code: number | null; signal: NodeJS.Signals | null }): void {
@@ -394,13 +481,6 @@ class TailnetOrchestrationError extends Error {
 
 function toTailnetError(error: unknown): TailnetErrorInfo {
   if (error instanceof RelayError) {
-    return {
-      code: error.code,
-      message: error.message,
-      ...(error.actionUrl === undefined ? {} : { actionUrl: error.actionUrl }),
-    }
-  }
-  if (error instanceof ServeError) {
     return {
       code: error.code,
       message: error.message,

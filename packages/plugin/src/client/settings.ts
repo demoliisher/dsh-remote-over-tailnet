@@ -272,13 +272,20 @@ export function createRemotePluginOptions(React: ClientReact) {
         React.createElement('div', { className: 'dshRemoteTailnetHeading' },
           React.createElement('strong', null, t('tailnetTitle')),
           React.createElement('p', null, t('tailnetHint'))),
+        tailnetView.phase === 'auth-required' && tailnetView.authUrl !== undefined
+          ? React.createElement('p', { className: 'dshRemoteTailnetAuth' },
+            t('tailnetAuthorizeHint'),
+            React.createElement('a', {
+              href: tailnetView.authUrl, target: '_blank', rel: 'noreferrer',
+            }, t('openInBrowser')))
+          : null,
         tailnetView.enabled && tailnetView.publicUrl !== undefined
           ? tailnetField(t('tailnetServerAddress'), tailnetView.publicUrl, 'address')
           : null,
         React.createElement('div', { className: 'dshRemoteTailnetSteps' },
-          tailnetStep(t('tailnetStepTailscale'), tailnetView.steps.tailscale),
+          tailnetStep(t('tailnetStepNode'), tailnetView.steps.node),
           tailnetStep(t('tailnetStepRelay'), tailnetView.steps.relay),
-          tailnetStep(t('tailnetStepServe'), tailnetView.steps.serve),
+          tailnetStep(t('tailnetStepListen'), tailnetView.steps.listen),
           tailnetStep(t('tailnetStepAuthorize'), tailnetView.steps.authorize)),
         tailnetView.enabled && tailnetView.account !== undefined
           ? tailnetField(t('tailnetAccount'), tailnetView.account, 'account')

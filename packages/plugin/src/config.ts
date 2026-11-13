@@ -16,15 +16,15 @@ export interface Config {
   service?: { enabled?: boolean }
   loopback?: { ports?: number[] }
   /**
-   * 本地中继与 Tailscale 组网编排（阶段一：复用系统已安装的 Tailscale）。
+   * 内嵌 Tailscale 节点与本地中继编排：节点运行在插件进程里，不依赖系统安装的 Tailscale。
    * 仅当 serverUrl 是本机 http 地址时才启用，见 `tailnetRelayPort`。
    */
   tailnet?: {
     enabled?: boolean
     /** 中继状态、日志与账号密码所在目录；默认在插件数据目录下的 tailnet 子目录。 */
     dataDirectory?: string
-    /** tailscale serve 对外使用的 HTTPS 端口，默认 443。 */
-    servePort?: number
+    /** 预先在管理台申请好的节点授权密钥；留空时首次启动给出授权链接。 */
+    authKey?: string
   }
   forceRelay?: boolean
   /**
@@ -72,7 +72,7 @@ export interface ResolvedCodexConfig {
   tailnet: {
     enabled: boolean
     dataDirectory?: string
-    servePort: number
+    authKey?: string
   }
   codex: ResolvedCodexConfig
 }
@@ -99,7 +99,7 @@ export const entryConfigSchema = s.object({
   sidebar: s.object({ entry: s.union(['standard', 'compact'] as const) }),
   service: s.object({ enabled: s.boolean() }),
   loopback: s.object({ ports: s.array(s.number()) }),
-  tailnet: s.object({ enabled: s.boolean(), dataDirectory: s.string(), servePort: s.number() }),
+  tailnet: s.object({ enabled: s.boolean(), dataDirectory: s.string(), authKey: s.string() }),
   forceRelay: s.boolean(),
   rotatePinnedPeerKey: s.boolean(),
   logLevel: s.union(['debug', 'info', 'warn', 'error'] as const),
@@ -152,7 +152,7 @@ const configSchema = z.object({
   tailnet: z.object({
     enabled: z.boolean().optional(),
     dataDirectory: z.string().trim().min(1).max(4096).optional(),
-    servePort: z.number().int().min(1).max(65535).optional(),
+    authKey: z.string().trim().min(1).max(512).optional(),
   }).strict().optional(),
   forceRelay: z.boolean().optional(),
   rotatePinnedPeerKey: z.boolean().optional(),
@@ -185,7 +185,7 @@ export function resolveConfig(input: ConfigInput = {}, env: NodeJS.ProcessEnv = 
     tailnet: {
       enabled: parsed.tailnet?.enabled ?? true,
       ...(parsed.tailnet?.dataDirectory === undefined ? {} : { dataDirectory: parsed.tailnet.dataDirectory }),
-      servePort: parsed.tailnet?.servePort ?? 443,
+      ...(parsed.tailnet?.authKey === undefined ? {} : { authKey: parsed.tailnet.authKey }),
     },
     forceRelay: parsed.forceRelay ?? false,
     rotatePinnedPeerKey: parsed.rotatePinnedPeerKey ?? false,

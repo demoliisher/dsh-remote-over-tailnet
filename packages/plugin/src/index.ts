@@ -271,18 +271,29 @@ async function activate(
       schedule,
     )
   }
-  const tailnet = initialStorageError === undefined
-    ? new TailnetOrchestrator({
-        config,
-        logger,
-        defaultDataDirectory: () => join(defaultIdentityDirectory, 'tailnet'),
-        packageRoot: PACKAGE_ROOT,
-        pluginVersion: PLUGIN_VERSION,
-      })
-    : undefined
   let runtime: HostPluginRuntime | undefined
+  let tailnet: TailnetOrchestrator | undefined
   let hostServiceProvided = false
-  if (initialStorageError === undefined) runtime = createRuntime(config)
+  if (initialStorageError === undefined) {
+    runtime = createRuntime(config)
+    // 节点就绪后由编排回调完成 Host 授权；授权成功才建立控制连接。
+    const currentTailnet = (): TailnetOrchestrator | undefined => tailnet
+    const currentRuntime = (): HostPluginRuntime | undefined => runtime
+    tailnet = new TailnetOrchestrator({
+      config,
+      logger,
+      defaultDataDirectory: () => join(defaultIdentityDirectory, 'tailnet'),
+      packageRoot: PACKAGE_ROOT,
+      pluginVersion: PLUGIN_VERSION,
+      onReady: async () => {
+        const host = currentRuntime()
+        const node = currentTailnet()
+        if (host === undefined || node === undefined) return
+        const authorized = await authorizeTailnetHost(node, host)
+        if (authorized) await host.setHostControl(true)
+      },
+    })
+  }
   const controlRuntime = connection === undefined
     ? undefined
     : new PluginControlRuntime(config, settingsBinding, runtime, tailnet)
@@ -310,9 +321,15 @@ async function activate(
           await runtime!.start()
           await tailnet?.stop()
         } else {
-          await tailnet?.start()
+          // 先启动 Host 运行时但暂不连接，节点就绪后由 onReady 授权再连，
+          // 避免节点等授权期间做注定失败的重连。
           await runtime!.start()
-          await authorizeTailnetHost(tailnet, runtime!)
+          await tailnet?.start()
+          const phase = tailnet?.snapshot()?.phase
+          // 只有配置了服务器地址的运行时才有控制连接可恢复；未配置时开关保持默认值。
+          if ((tailnet === undefined || phase === 'disabled') && runtime!.hostStatus().configured) {
+            await runtime!.setHostControl(true)
+          }
         }
       } catch (error) {
         logger.error('Remote plugin startup failed', safeStartupError(error))
@@ -334,26 +351,24 @@ async function activate(
  *
  * 每次都重新登录并注册设备：中继的 state.json 可能被重建或密码轮换，本地旧令牌会失效，
  * 幂等重新注册可覆盖过期凭据；失败只写面板，交给 Host 自己的重连兜底。
+ *
+ * @returns 是否已经可以用中继凭据连接；授权失败时返回 false。
  */
 async function authorizeTailnetHost(
-  tailnet: TailnetOrchestrator | undefined,
+  tailnet: TailnetOrchestrator,
   runtime: HostPluginRuntime,
-): Promise<void> {
-  if (tailnet === undefined) return
-  if (!tailnet.relayReady()) {
-    tailnet.reportAuthorizeSkipped('本地中继未就绪，跳过自动授权')
-    return
-  }
+): Promise<boolean> {
+  if (tailnet.snapshot()?.steps.authorize.ok === true) return true
   const credentials = tailnet.credentials()
-  if (credentials === undefined) {
-    tailnet.reportAuthorizeSkipped('尚未生成中继账号')
-    return
-  }
+  // 节点就绪前编排不会回调这里，凭据缺失说明启动流程被中断，按失败处理。
+  if (credentials === undefined) throw new Error('中继账号尚未生成，无法完成 Host 授权。')
   try {
     await runtime.authorizeHostWithAccount(credentials.account, credentials.password)
     tailnet.reportAuthorized()
+    return true
   } catch (error) {
     tailnet.reportAuthorizeFailure(error)
+    return false
   }
 }
 

@@ -36,7 +36,8 @@
     "locale",
     "public.d.ts",
     "README.md",
-    "icon.png"
+    "icon.png",
+    "tsnet"
   ],
   "dsh": {
     "bundle": {
@@ -58,7 +59,8 @@
     }
   },
   "scripts": {
-    "build": "node scripts/verify-version-sync.mjs && tsc -p tsconfig.json && node scripts/build-bundles.mjs",
+    "build": "node scripts/verify-version-sync.mjs && node scripts/build-tsnet.mjs && tsc -p tsconfig.json && node scripts/build-bundles.mjs",
+    "build:tsnet": "node scripts/build-tsnet.mjs",
     "check": "node scripts/verify-version-sync.mjs && tsc -p tsconfig.test.json",
     "test": "node scripts/verify-version-sync.mjs && vitest run"
   },

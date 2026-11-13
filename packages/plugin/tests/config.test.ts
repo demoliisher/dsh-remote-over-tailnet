@@ -9,7 +9,7 @@ describe('plugin config', () => {
       terminal: { enabled: true },
       sidebar: { entry: 'standard' },
       loopback: { ports: [] },
-      tailnet: { enabled: true, servePort: 443 },
+      tailnet: { enabled: true },
       forceRelay: false,
       rotatePinnedPeerKey: false,
       logLevel: 'info',

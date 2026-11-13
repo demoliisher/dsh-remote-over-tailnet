@@ -70,7 +70,7 @@ describe('PluginControlRuntime settings', () => {
           serverUrl: 'https://relay.example.test',
           service: { enabled: true },
           codex: { enabled: false, binary: 'codex' },
-          tailnet: { enabled: true, servePort: 443 },
+          tailnet: { enabled: true },
         },
       },
     })
@@ -180,46 +180,38 @@ describe('PluginControlRuntime remote service', () => {
       .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'METHOD_NOT_ALLOWED' } } })
   })
 
-  it('starts the tailnet and re-authorizes before resuming Host control', async () => {
-    const settings = settingsBinding({ serverUrl: 'https://relay.example.test' })
+  it('starts the embedded node and resumes Host control once the relay is ready', async () => {
+    const settings = settingsBinding({ serverUrl: 'http://127.0.0.1:8080' })
     const calls: string[] = []
     const host = hostStub({
-      setHostControl: vi.fn(async (enabled: boolean) => { calls.push(`setHostControl:${String(enabled)}`) }),
-      authorizeHostWithAccount: vi.fn(async (email: string, password: string) => {
-        calls.push(`authorize:${email}:${password}`)
-        return { method: 'account' }
+      setHostControl: vi.fn(async (enabled: boolean, options?: { connect?: boolean }) => {
+        calls.push(`setHostControl:${String(enabled)}:${String(options?.connect)}`)
       }),
     })
-    const tailnet = tailnetStub({ credentials: { account: 'relay@example.test', password: 'relay-password' } })
+    const tailnet = tailnetStub({ credentials: { account: 'relay@example.test', password: 'relay-password' }, snapshot: tailnetSnapshot() })
     const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, host, tailnet))
 
     await expect(handler('service.set', { enabled: true }, signal())).resolves.toMatchObject({ ok: true })
-    expect(calls).toEqual(['authorize:relay@example.test:relay-password', 'setHostControl:true'])
     expect(tailnet.start).toHaveBeenCalledOnce()
-    expect(tailnet.reportAuthorized).toHaveBeenCalledOnce()
-    expect(tailnet.reportAuthorizeFailure).not.toHaveBeenCalled()
+    expect(calls).toEqual(['setHostControl:true:undefined'])
     expect(settings.get().service).toEqual({ enabled: true })
-
-    const failure = new Error('relay rejected the Host')
-    calls.length = 0
-    const rejecting = tailnetStub({ credentials: { account: 'relay@example.test', password: 'relay-password' } })
-    vi.mocked(rejecting.credentials).mockReturnValue({ account: 'relay@example.test', password: 'relay-password' })
-    const rejectingHandler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, hostStub({
-      authorizeHostWithAccount: vi.fn(async () => { throw failure }),
-      setHostControl: vi.fn(async (enabled: boolean) => { calls.push(`setHostControl:${String(enabled)}`) }),
-    }), rejecting))
-    const failed = await rejectingHandler('service.set', { enabled: true }, signal())
-    expect(failed).toMatchObject({ ok: false, error: { message: 'relay rejected the Host' } })
-    expect(rejecting.reportAuthorizeFailure).toHaveBeenCalledWith(failure)
-    expect(calls).toEqual([])
-
-    const unavailable = tailnetStub({ credentials: undefined })
-    const unavailableHandler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, hostStub(), unavailable))
-    await expect(unavailableHandler('service.set', { enabled: true }, signal()))
-      .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'CREDENTIALS_UNAVAILABLE' } } })
   })
 
-  it('stops the local relay and the Tailscale forward when the remote service is turned off', async () => {
+  it('opens the switch without connecting while the embedded node waits for authorization', async () => {
+    const settings = settingsBinding({ serverUrl: 'http://127.0.0.1:8080' })
+    const host = hostStub()
+    const tailnet = tailnetStub({
+      snapshot: { ...tailnetSnapshot(), phase: 'auth-required', publicUrl: undefined, authUrl: 'https://login.tailscale.com/a/example' },
+      relayReady: false,
+    })
+    const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, host, tailnet))
+
+    await expect(handler('service.set', { enabled: true }, signal())).resolves.toMatchObject({ ok: true })
+    expect(host.setHostControl).toHaveBeenCalledWith(true, { connect: false })
+    expect(settings.get().service).toEqual({ enabled: true })
+  })
+
+  it('stops the local relay and the embedded node when the remote service is turned off', async () => {
     const settings = settingsBinding({ serverUrl: 'http://127.0.0.1:8080' })
     const host = hostStub()
     const tailnet = tailnetStub({ snapshot: tailnetSnapshot() })
@@ -448,9 +440,9 @@ function tailnetSnapshot(): TailnetSnapshot {
     publicUrl: 'https://host.tailnet.example.test',
     relayPort: 8080,
     steps: {
-      tailscale: { ok: true, detail: 'connected' },
+      node: { ok: true, detail: 'joined' },
       relay: { ok: true, detail: 'running' },
-      serve: { ok: true, detail: 'serving' },
+      listen: { ok: true, detail: 'listening' },
       authorize: { ok: true, detail: 'authorized' },
     },
     updatedAt: '2026-01-01T00:00:00.000Z',

@@ -3,6 +3,8 @@
 
 # 依赖与构建产物
 node_modules/
+# 内嵌 Tailscale 节点，由 packages/plugin/scripts/build-tsnet.mjs 生成
+packages/plugin/tsnet/tsnet.wasm
 dist/
 build/
 *.log

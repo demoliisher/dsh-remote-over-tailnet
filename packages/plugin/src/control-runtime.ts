@@ -43,7 +43,7 @@ export interface HostControl {
   hostStatus(): HostRemoteStatus
   authorizeHostWithAccount(email: string, password: string): Promise<unknown>
   reconnectHost(): void
-  setHostControl(enabled: boolean): Promise<void>
+  setHostControl(enabled: boolean, options?: { connect?: boolean }): Promise<void>
   renameHost(deviceName: string, credentials?: { account: string; password: string }): Promise<HostRemoteStatus>
   setTerminalEnabled?(enabled: boolean): void
   setLoopbackPorts?(ports: readonly number[]): void
@@ -131,15 +131,15 @@ export class PluginControlRuntime {
   }
 
   private credentials(): { account: string; password: string } {
-    if (this.tailnet === undefined) throw new ControlError('METHOD_NOT_ALLOWED', 'Tailscale 组网未启用。')
+    if (this.tailnet === undefined) throw new ControlError('METHOD_NOT_ALLOWED', '内嵌节点未启用。')
     const credentials = this.tailnet.credentials()
-    if (credentials === undefined) throw new ControlError('CREDENTIALS_UNAVAILABLE', '中继账号尚未生成，请等待 Tailscale 与中继就绪。')
+    if (credentials === undefined) throw new ControlError('CREDENTIALS_UNAVAILABLE', '中继账号尚未生成，请等待内嵌节点与中继就绪。')
     return credentials
   }
 
   /**
-   * 「远程服务」总开关：打开时启动本地中继与 Tailscale 转发、完成 Host 授权，再恢复控制连接；
-   * 关闭时先断开 Host 连接，再停止中继并移除转发。
+   * 「远程服务」总开关：打开时先启动内嵌节点与本地中继，节点仍在等 Tailscale 授权时
+   * 只打开开关、由编排在就绪回调里完成 Host 授权与连接；关闭时先断开 Host 连接，再停止中继与节点。
    */
   private async setService(payload: unknown): Promise<Record<string, unknown>> {
     const value = record(payload)
@@ -151,24 +151,20 @@ export class PluginControlRuntime {
       return this.hostOnlyStatus()
     }
     if (this.host === undefined) throw new ControlError('METHOD_NOT_ALLOWED', '插件当前没有运行 Host。')
-    if (this.tailnet !== undefined) {
-      await this.tailnet.start()
-      const snapshot = this.tailnet.snapshot()
-      // 外部服务器不运行本地中继，此时 disabled 快照无需等待 relayReady。
-      if (snapshot?.phase !== 'disabled' && !this.tailnet.relayReady()) {
-        throw new ControlError('REMOTE_SERVICE_UNAVAILABLE', snapshot?.error?.message ?? '本地中继未就绪，远程服务未能启动。')
-      }
-      // 先确认中继授权再恢复连接：用过期凭据 resume 会先触发一轮失败重连。
-      if (this.tailnet.relayReady()) {
-        const credentials = this.credentials()
-        try {
-          await this.host.authorizeHostWithAccount(credentials.account, credentials.password)
-          this.tailnet.reportAuthorized()
-        } catch (error) {
-          this.tailnet.reportAuthorizeFailure(error)
-          throw error
-        }
-      }
+    if (this.tailnet === undefined) {
+      await this.host.setHostControl(true)
+      return this.hostOnlyStatus()
+    }
+    await this.tailnet.start()
+    const snapshot = this.tailnet.snapshot()
+    if (snapshot?.phase === 'error') {
+      throw new ControlError('REMOTE_SERVICE_UNAVAILABLE', snapshot.error?.message ?? '远程服务启动失败。')
+    }
+    if (snapshot?.phase !== 'disabled' && !this.tailnet.relayReady()) {
+      // 节点还没入网（等授权或仍在启动）：先打开开关但不连接，
+      // 授权完成后由编排的 onReady 回调授权并恢复控制连接。
+      await this.host.setHostControl(true, { connect: false })
+      return this.hostOnlyStatus()
     }
     await this.host.setHostControl(true)
     return this.hostOnlyStatus()
@@ -297,7 +293,7 @@ function editableConfig(config: ResolvedConfig): Config {
     tailnet: {
       enabled: config.tailnet.enabled,
       ...(config.tailnet.dataDirectory === undefined ? {} : { dataDirectory: config.tailnet.dataDirectory }),
-      servePort: config.tailnet.servePort,
+      ...(config.tailnet.authKey === undefined ? {} : { authKey: config.tailnet.authKey }),
     },
     forceRelay: config.forceRelay,
     logLevel: config.logLevel,

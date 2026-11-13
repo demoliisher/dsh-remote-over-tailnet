@@ -1261,7 +1261,7 @@ function config(): ResolvedConfig {
     terminal: { enabled: false },
     sidebar: { entry: 'standard' },
     loopback: { ports: [] },
-    tailnet: { enabled: true, servePort: 443 },
+    tailnet: { enabled: true },
     enabled: true,
     service: { enabled: true },
     serverUrl: 'https://relay.example.test',

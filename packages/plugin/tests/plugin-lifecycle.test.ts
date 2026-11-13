@@ -131,8 +131,8 @@ describe('Cordis plugin lifecycle', () => {
     }
   })
 
-  it('records why the automatic Host authorization was skipped when the relay is not ready', async () => {
-    const dshHome = await temporaryDirectory('dsh-remote-relay-not-ready-')
+  it('connects directly when the server address points at an external server', async () => {
+    const dshHome = await temporaryDirectory('dsh-remote-external-server-')
     vi.stubEnv('DSH_HOME', dshHome)
     vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => { throw new Error('offline fixture') }))
     const fixture = connection()
@@ -143,7 +143,7 @@ describe('Cordis plugin lifecycle', () => {
     const fiber = await ctx.plugin(remotePlugin, {
       ...disabledAgentDomains,
       serverUrl: 'https://relay.example.test',
-      deviceName: 'Cordis relay host',
+      deviceName: 'Cordis external server host',
     })
     const call = (endpoint: string, payload: unknown = {}) => fixture.handler!(endpoint, payload, new AbortController().signal)
     try {
@@ -151,7 +151,15 @@ describe('Cordis plugin lifecycle', () => {
       await vi.waitFor(async () => {
         await expect(call('status')).resolves.toMatchObject({
           ok: true,
-          value: { tailnet: { steps: { authorize: { detail: '本地中继未就绪，跳过自动授权' } } } },
+          value: {
+            serviceAvailable: true,
+            host: { enabled: true },
+            tailnet: {
+              enabled: false,
+              phase: 'disabled',
+              steps: { node: { detail: '服务器地址不是 http://127.0.0.1:<端口> 这样的本机地址，按外部服务器处理，未启动内置中继。' } },
+            },
+          },
         })
       })
     } finally {

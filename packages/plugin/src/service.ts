@@ -195,7 +195,6 @@ export class HostPluginRuntime {
       this.serverApi.setHarnessVersion(this.harnessVersion)
       this.serverApi.bindIdentity(this.identity)
       this.serverConnection = this.createServerConnection(this.identity)
-      if (this.controlEnabled) this.serverConnection.start()
     }
   }
 
@@ -257,15 +256,21 @@ export class HostPluginRuntime {
   /**
    * 「远程服务」总开关的 Host 侧动作。关闭只停控制连接，设备授权与身份保持不变；
    * 重新打开时直接恢复连接，本机凭据缺失时由调用方先重新授权。
+   *
+   * connect 为 false 只记录开关状态，不建立连接：内嵌节点还在等 Tailscale 授权时，
+   * 中继尚未运行，提前连接只会触发一轮必定失败的重连。
    */
-  async setHostControl(enabled: boolean): Promise<void> {
+  async setHostControl(enabled: boolean, options: { connect?: boolean } = {}): Promise<void> {
     if (this.closed) throw new Error('remote runtime is closed')
     if (this.serverConnection === undefined) {
       throw new ServerApiError('SERVER_NOT_CONFIGURED', 'Configure serverUrl before changing Host access.', false)
     }
     this.controlEnabled = enabled
-    if (enabled) this.serverConnection.resume()
-    else await this.serverConnection.stop()
+    if (!enabled) {
+      await this.serverConnection.stop()
+      return
+    }
+    if (options.connect !== false) this.serverConnection.resume()
   }
 
   /**

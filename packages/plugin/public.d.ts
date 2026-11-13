@@ -10,7 +10,7 @@ export interface Config {
   tailnet?: {
     enabled?: boolean
     dataDirectory?: string
-    servePort?: number
+    authKey?: string
   }
   forceRelay?: boolean
   logLevel?: 'debug' | 'info' | 'warn' | 'error'
