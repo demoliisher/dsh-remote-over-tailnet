@@ -138,7 +138,12 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     const serviceEnabled = status?.host?.enabled
     const localRelay = status?.tailnet?.relayPort !== undefined
     React.useEffect(() => {
-      if (!open || !localRelay) return undefined
+      if (!open) return undefined
+      if (serviceEnabled === false) {
+        setError(undefined)
+        return undefined
+      }
+      if (!localRelay) return undefined
       let cancelled = false
       void props.control<TailnetCredentialsView | null>('tailnet.credentials')
         .then(credentials => {
@@ -267,6 +272,9 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     const tailnet = status?.tailnet
     // 中继对外地址：Tailscale 组网就绪后是 HTTPS 域名，未就绪时没有可抄的地址。
     const serviceAddress = tailnet?.publicUrl
+    // 连接数只跟随远程服务开关：关闭时不显示，开启时没有客户端也显示 0。
+    const connectedClients = status?.host?.connectedClients ?? []
+    const connectedClientCount = status?.host?.enabled === true ? connectedClients.length : undefined
     const relayPhaseLabel = tailnet === undefined || tailnet === null
       ? t('tailnetPhaseDisabled')
       : t(tailnetPhaseKeys[tailnet.phase])
@@ -280,10 +288,8 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     const relayAddressField = serviceAddress === undefined ? null : React.createElement('label', { className: 'dshRemoteRelayAddressField' },
       React.createElement('span', { className: 'dshRemoteRelayFieldLabel' }, t('tailnetServerAddress')),
       React.createElement('div', { className: 'dshRemoteRelayAddressBox' },
-        React.createElement('a', {
-          href: serviceAddress,
-          target: '_blank',
-          rel: 'noreferrer',
+        React.createElement('span', {
+          className: 'dshRemoteRelayAddressText',
           title: serviceAddress,
         }, serviceAddress)))
     // 眼睛图标只切换密码的可见性，复制通过选中文本框完成。
@@ -369,7 +375,18 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
               'aria-label': t('remoteService'),
               checked: status?.host?.enabled === true,
               onChange: (event: Event) => void setRemoteService((event.target as HTMLInputElement).checked),
-            }))
+            }),
+            connectedClientCount === undefined
+              ? null
+              : React.createElement('span', {
+                className: 'dshRemoteServiceCount',
+                title: connectedClientCount === 0
+                  ? t('connectedClientsEmpty')
+                  : t('connectedClientCount', { count: connectedClientCount }),
+                'aria-label': connectedClientCount === 0
+                  ? t('connectedClientsEmpty')
+                  : t('connectedClientCount', { count: connectedClientCount }),
+              }, String(connectedClientCount)))
           : null,
         React.createElement('div', { className: 'dshRemoteRelayActions' },
           saved ? React.createElement('span', { className: 'dshRemoteRelaySaved' }, t('tailnetSaved')) : null,
@@ -378,25 +395,6 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
             disabled: busy || !deviceNameValid || (!deviceNameChanged && (credentialsLocked || !credentialsChanged)),
             onClick: () => void saveChanges(),
           }, t(busy ? 'saving' : 'tailnetSave')))))
-
-    const host = status?.host
-    const connectedClients = host?.connectedClients ?? []
-    const hostControlPanel = React.createElement('section', { className: 'dshRemoteHostControl' },
-      React.createElement('div', { className: 'dshRemoteSectionHeading' },
-        React.createElement('div', { className: 'dshRemoteSectionTitle' },
-          React.createElement('strong', null, t('remoteService')))),
-      React.createElement('p', { className: 'dshRemoteHostHint' }, t('remoteServiceHint')),
-      host === undefined || host.enabled === false
-        ? null
-        : React.createElement('p', {
-          className: connectedClients.length === 0 ? 'dshRemoteClientStatus' : 'dshRemoteClientStatus isActive',
-          role: 'status',
-        },
-          connectedClients.length === 0
-            ? t('connectedClientsEmpty')
-            : React.createElement(React.Fragment, null,
-              React.createElement('span', { className: 'dshRemoteClientStatusDot', 'aria-hidden': true }),
-              t('connectedClientCount', { count: connectedClients.length }))))
 
     const errorNotice = error === undefined
       ? null
@@ -443,8 +441,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
               }, '×'))),
           React.createElement('main', { className: 'dshRemotePageBody' },
             errorNotice,
-            relayAccessPanel,
-            hostControlPanel),
+            relayAccessPanel),
           React.createElement('footer', { className: 'dshRemotePageFooter' },
             React.createElement('a', {
               className: 'dshRemoteStarLink',
