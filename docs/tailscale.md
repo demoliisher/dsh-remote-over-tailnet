@@ -1,37 +1,39 @@
-# Tailscale 要求与排障
+# 内嵌节点与排障
 
-ROT 阶段一直接复用系统安装的 Tailscale，插件不创建新的 tailnet 节点。
+ROT 不依赖系统安装的 Tailscale：插件把 tsnet 编译成 WebAssembly 放进自己的 Node 进程里运行，作为独立节点加入 tailnet，节点名固定为 `dsh-remote`。
 
 ## 前置条件
 
-- 电脑已安装 Tailscale，已登录，`tailscale status --json` 的 `BackendState` 为 `Running`、`Self.Online` 为 `true`。
+- 一个可用的 tailnet 账号。电脑本身不需要安装 Tailscale，加入 tailnet 由插件完成。
 - 客户端设备与电脑在同一个 tailnet，客户端设备的 Tailscale 在线。
-- tailnet 已开启 HTTPS Certificates：Tailscale 管理台 → DNS → HTTPS Certificates。开启后 Tailscale 会为节点签发 `https://<节点名>.<tailnet>.ts.net` 证书。
+- 只提供 tailnet 内的访问，不做 Funnel。
 
 ## 插件会做什么
 
 | 步骤 | 动作 | 失败时的提示 |
 | --- | --- | --- |
-| Tailscale | 读取 `tailscale status --json`，取节点 DNSName 与证书域名 | 未安装、未登录、未运行、离线、无域名，各有对应中文提示 |
-| 本地中继 | 以固定账号密码在 `127.0.0.1:<端口>` 启动中继服务器，数据写入 `$DSH_HOME/dsh-remote-over-tailnet/tailnet/` | 端口被占用、版本不匹配、已有实例在运行 |
-| HTTPS 地址 | 执行幂等的 `tailscale serve --bg --https=443 http://127.0.0.1:<端口>`，并复查实际转发目标 | 证书未开启时提示去管理台开启，并给出管理台地址 |
+| 内嵌节点 | 在 `<数据目录>/node/` 保存节点身份并启动 wasm 版 tsnet；首次使用给出授权链接 | 未授权时面板显示授权链接；填了 `tailnet.authKey` 则直接注册 |
+| 本地中继 | 以固定账号密码在 `127.0.0.1:<端口>` 启动中继服务器 | 端口被占用、版本不匹配、已有实例在运行 |
+| tailnet 监听 | 节点在 tailnet 内监听同一端口，每个入站连接转发到本机中继 | 节点已监听但回环中继不通时提示 `TAILNET_LISTEN_UNREACHABLE` |
 | Host 授权 | 用中继账号密码登录并注册本机 Host 身份 | 账号或密码与服务端不一致时提示并自动重建中继数据 |
 
-验证命令：
+验证方式：在任意一台已登录 tailnet 的设备上执行 `tailscale status`，能看到 `dsh-remote` 节点；用浏览器打开面板显示的服务地址加 `/health`，返回 `{"status":"ok"}`。
 
-```powershell
-tailscale serve status --json
-```
+## 密钥过期
 
-输出中应出现 `Web["<DNSName>:443"].Handlers["/"].Proxy` 等于 `http://127.0.0.1:8080`（端口以实际配置为准）。
+节点密钥默认 180 天后过期，过期后需要重新授权才能继续使用。放在家里长期运行的电脑建议在 Tailscale 管理台关闭这个节点的密钥过期：Devices → 选择 `dsh-remote` → Disable key expiry。服务器每天都要用浏览器点一次授权显然不现实，所以这一步是一次性的必要设置。
 
 ## 常见问题
 
-### 面板提示 HTTPS 证书未开启
+### 面板停在「内嵌节点」并给出授权链接
 
-到 Tailscale 管理台开启 HTTPS Certificates，等待证书签发后点面板的「重新检测」。开启后首次签发证书可能需要几十秒，插件已把 serve 调用超时放宽到 180 秒。
+在浏览器打开链接，登录 tailnet 账号并同意加入。授权完成后面板会自动继续，不需要重启。若希望完全跳过人工授权，把 `tailnet.authKey` 填成管理台生成的授权密钥（建议勾选 pre-approved，且不复用给其他设备）。
 
-### 另一实例已启动中继
+### 面板提示监听失败
+
+内嵌节点已经在 tailnet 内监听，但节点自己访问 `http://127.0.0.1:<端口>/health` 没有成功。先确认中继是否在运行，再看插件日志中的 `TAILNET_LISTEN_UNREACHABLE` 细节；`relay.log` 在数据目录下。
+
+### 另一个实例已启动中继
 
 中继同一时间只能被一个 DSH 实例占用。关闭其他正在运行的 DSH 实例后重试。插件会在 `$DSH_HOME/dsh-remote-over-tailnet/tailnet/relay.lock` 记录监督进程与中继进程；上次退出异常留下的中继进程会被检测并终止。
 
@@ -41,7 +43,11 @@ tailscale serve status --json
 
 ### 客户端打不开地址
 
-依次确认：客户端设备 Tailscale 在线；能解析节点域名；浏览器打开 `https://<DNSName>/health` 返回 `{"status":"ok"}`。客户端中填写的应是 `https://` 地址，不能填回环地址。
+依次确认：客户端设备的 Tailscale 在线；能解析 `dsh-remote.<tailnet>.ts.net`；服务地址是 `http://` 开头的域名加端口，不能填回环地址。在电脑上用面板的地址访问 `/health` 能通，说明插件侧正常，问题在客户端的网络或 tailnet ACL。
+
+### 节点要重新登录
+
+删除数据目录下的 `node/` 目录后重新开启远程服务，插件会重新注册节点并给出新的授权链接。
 
 ### 账号密码丢了
 
@@ -49,11 +55,11 @@ tailscale serve status --json
 
 ### 想放到数据盘
 
-把配置里的 `tailnet.dataDirectory` 改到数据盘目录。中继的 `state.json`、日志、锁与凭据都会写入该目录。
+把配置里的 `tailnet.dataDirectory` 改到数据盘目录。节点状态、凭据、中继的 `state.json`、日志与锁都会写入该目录。
 
 ## 安全边界
 
-- 中继只监听 `127.0.0.1`，不向局域网或公网开端口；对外入口只有 Tailscale 的 443。
-- Tailscale 负责 TLS 终止与设备身份；插件不额外暴露管理接口。
+- 中继只监听 `127.0.0.1`，不向局域网或公网开端口；唯一对外入口是内嵌节点在 tailnet 内的端口，链路本身由 WireGuard 加密。
+- 不做 TLS 证书、不做 `tailscale serve` 与 Funnel，因此没有证书签发问题，也不受 443 端口占用影响。
 - 账号密码只写入权限 0600 的文件，面板按需读取，不写日志。
 - 使用范围受 tailnet ACL 约束；如需限制客户端访问，请在 Tailscale 管理台配置 ACL。

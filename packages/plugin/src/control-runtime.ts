@@ -74,7 +74,7 @@ export class PluginControlRuntime {
     private config: ResolvedConfig,
     private readonly settings: PluginSettingsBinding | undefined,
     private host: HostControl | undefined,
-    /** 阶段一的本地中继与 Tailscale 组网编排；未启用时为 undefined。 */
+    /** 内嵌节点与本地中继的编排；未启用时为 undefined。 */
     private readonly tailnet?: TailnetControl,
   ) {}
 
