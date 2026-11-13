@@ -22,6 +22,6 @@ dsh-remote-over-tailnet@0.6.4
 
 ## 说明
 
-首次开启远程服务时面板会给出一次授权链接，也可以填 `tailnet.authKey` 跳过浏览器授权。节点名固定为 `dsh-remote`，对外地址为 `http://dsh-remote.<tailnet>.ts.net:<端口>`。详细要求与排障见仓库根目录的 `docs/tailscale.md`。
+首次开启远程服务时面板会给出一次授权链接，也可以填 `tailnet.authKey` 跳过浏览器授权。节点名固定为 `dsh-remote`，对外地址为 `http://dsh-remote.<tailnet>.ts.net`（节点在 tailnet 内监听 80 端口，地址里不写端口）。详细要求与排障见仓库根目录的 `docs/tailscale.md`。
 
 本项目衍生自 MIT 项目 [ds-harness-remote](https://github.com/liguobao/ds-harness-remote)，保留其 LICENSE 与 NOTICE；与 Tailscale Inc.、DeepSeek 均无关联，未获其背书。

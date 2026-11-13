@@ -14,7 +14,7 @@ ROT 不依赖系统安装的 Tailscale：插件把 tsnet 编译成 WebAssembly �
 | --- | --- | --- |
 | 内嵌节点 | 在 `<数据目录>/node/` 保存节点身份并启动 wasm 版 tsnet；首次使用给出授权链接 | 未授权时面板显示授权链接；填了 `tailnet.authKey` 则直接注册 |
 | 本地中继 | 以固定账号密码在 `127.0.0.1:<端口>` 启动中继服务器 | 端口被占用、版本不匹配、已有实例在运行 |
-| tailnet 监听 | 节点在 tailnet 内监听同一端口，每个入站连接转发到本机中继 | 节点已监听但回环中继不通时提示 `TAILNET_LISTEN_UNREACHABLE` |
+| tailnet 监听 | 节点在 tailnet 的 80 端口监听，每个入站连接转发到本机中继；这个监听发生在用户态网络实现里，不占用宿主机端口 | 节点已监听但回环中继不通时提示 `TAILNET_LISTEN_UNREACHABLE` |
 | Host 授权 | 用中继账号密码登录并注册本机 Host 身份 | 账号或密码与服务端不一致时提示并自动重建中继数据 |
 
 验证方式：在任意一台已登录 tailnet 的设备上执行 `tailscale status`，能看到 `dsh-remote` 节点；用浏览器打开面板显示的服务地址加 `/health`，返回 `{"status":"ok"}`。
@@ -31,7 +31,7 @@ ROT 不依赖系统安装的 Tailscale：插件把 tsnet 编译成 WebAssembly �
 
 ### 面板提示监听失败
 
-内嵌节点已经在 tailnet 内监听，但节点自己访问 `http://127.0.0.1:<端口>/health` 没有成功。先确认中继是否在运行，再看插件日志中的 `TAILNET_LISTEN_UNREACHABLE` 细节；`relay.log` 在数据目录下。
+内嵌节点已经在 tailnet 内监听，但节点自己访问服务地址的 `/health` 没有成功。先确认中继是否在运行，再看插件日志中的 `TAILNET_LISTEN_UNREACHABLE` 细节；`relay.log` 在数据目录下。
 
 ### 另一个实例已启动中继
 
@@ -43,7 +43,7 @@ ROT 不依赖系统安装的 Tailscale：插件把 tsnet 编译成 WebAssembly �
 
 ### 客户端打不开地址
 
-依次确认：客户端设备的 Tailscale 在线；能解析 `dsh-remote.<tailnet>.ts.net`；服务地址是 `http://` 开头的域名加端口，不能填回环地址。在电脑上用面板的地址访问 `/health` 能通，说明插件侧正常，问题在客户端的网络或 tailnet ACL。
+依次确认：客户端设备的 Tailscale 在线；能解析 `dsh-remote.<tailnet>.ts.net`；服务地址是 `http://dsh-remote.<tailnet>.ts.net` 这样的域名，不能填回环地址。在电脑上用面板的地址访问 `/health` 能通，说明插件侧正常，问题在客户端的网络或 tailnet ACL。
 
 ### 节点要重新登录
 
@@ -59,7 +59,7 @@ ROT 不依赖系统安装的 Tailscale：插件把 tsnet 编译成 WebAssembly �
 
 ## 安全边界
 
-- 中继只监听 `127.0.0.1`，不向局域网或公网开端口；唯一对外入口是内嵌节点在 tailnet 内的端口，链路本身由 WireGuard 加密。
+- 中继只监听 `127.0.0.1`，不向局域网或公网开端口；唯一对外入口是内嵌节点在 tailnet 内的 80 端口，链路本身由 WireGuard 加密。
 - 不做 TLS 证书、不做 `tailscale serve` 与 Funnel，因此没有证书签发问题，也不受 443 端口占用影响。
 - 账号密码只写入权限 0600 的文件，面板按需读取，不写日志。
 - 使用范围受 tailnet ACL 约束；如需限制客户端访问，请在 Tailscale 管理台配置 ACL。

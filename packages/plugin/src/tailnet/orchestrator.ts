@@ -6,8 +6,16 @@ import type { TsnetNode, TsnetNodeStatus } from './embedded-node.js'
 import { connectEmbeddedNode } from './embedded-node.js'
 import { RelayError, relayLogPath, startRelay, type RelayHandle } from './relay.js'
 
-/** 节点在 tailnet 里的固定名称，对外地址形如 http://dsh-remote.<tailnet>.ts.net:<端口>。 */
+/** 节点在 tailnet 里的固定名称，对外地址形如 http://dsh-remote.<tailnet>.ts.net。 */
 export const TAILNET_NODE_HOSTNAME = 'dsh-remote'
+
+/**
+ * 节点在 tailnet 内的监听端口。
+ *
+ * 这是 http 默认端口，对外地址不必写端口；wasm 节点的监听发生在用户态网络实现里，
+ * 不向系统申请套接字，因此与宿主机 80 端口被谁占用无关。
+ */
+export const TAILNET_LISTEN_PORT = 80
 
 /** 面板上展示的单个步骤状态；ok 为 null 表示还没走到这一步。 */
 export interface TailnetStep {
@@ -100,14 +108,14 @@ export function tailnetRelayPort(serverUrl: string | undefined): number | undefi
   return Number(url.port)
 }
 
-/** 去掉 DNSName 末尾的点，生成对外地址。 */
-function publicUrlFor(dnsName: string, relayPort: number): string {
-  return 'http://' + dnsName.replace(/\.$/, '') + ':' + String(relayPort)
+/** 去掉 DNSName 末尾的点，生成对外地址；节点监听 80 端口，地址里不写端口。 */
+export function publicUrlFor(dnsName: string): string {
+  return 'http://' + dnsName.replace(/\.$/, '')
 }
 
 /**
  * 编排内嵌节点与本地中继：启动 wasm 节点 → 等待加入 tailnet（必要时给出授权链接）→
- * 固定端口起中继 → 在 tailnet 同端口监听并转发到中继 → 等 Host 设备授权。
+ * 在回环端口起中继 → 节点在 tailnet 的 80 端口监听并转发到中继 → 等 Host 设备授权。
  *
  * 失败不抛出：把错误写进快照，面板展示可操作的中文提示，插件其余部分继续运行。
  */
@@ -260,7 +268,7 @@ export class TailnetOrchestrator implements TailnetControl {
       this.state.phase = 'starting'
       this.state.authUrl = undefined
       this.state.dnsName = dnsName
-      this.state.publicUrl = publicUrlFor(dnsName, relayPort)
+      this.state.publicUrl = publicUrlFor(dnsName)
       this.state.steps.node = { ok: true, detail: '节点已加入 tailnet：' + dnsName }
       this.publish()
       return this.state.phase
@@ -307,15 +315,15 @@ export class TailnetOrchestrator implements TailnetControl {
         throw new TailnetOrchestrationError('TAILNET_NODE_STOPPED', '内嵌节点已停止，无法监听 tailnet 端口。')
       }
       if (this.listeningPort !== relayPort) {
-        this.state.steps.listen = { ok: null, detail: '正在 tailnet 端口 ' + String(relayPort) + ' 监听' }
+        this.state.steps.listen = { ok: null, detail: '正在 tailnet 端口 ' + String(TAILNET_LISTEN_PORT) + ' 监听' }
         this.publish()
-        await node.listen(relayPort, relayPort)
+        await node.listen(TAILNET_LISTEN_PORT, relayPort)
         this.listeningPort = relayPort
       }
       await this.waitForRelay(publicUrl + '/health')
       this.state.steps.listen = {
         ok: true,
-        detail: '已在 ' + publicUrl + ' 监听并转发到 127.0.0.1:' + String(relayPort),
+        detail: '已在 ' + publicUrl + '（端口 ' + String(TAILNET_LISTEN_PORT) + '）监听并转发到 127.0.0.1:' + String(relayPort),
       }
       this.state.steps.authorize = { ok: null, detail: '等待 Host 设备授权' }
       this.state.phase = 'ready'
