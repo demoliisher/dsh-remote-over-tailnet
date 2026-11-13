@@ -81,7 +81,7 @@ export const en = {
 
   tailnetTitle: 'Connection details',
   tailnetHint: 'Open any client that supports DSH Remote and fill in the address and account below.',
-  tailnetStatus: 'Status',
+
   tailnetStepTailscale: 'Tailscale',
   tailnetStepRelay: 'Local relay',
   tailnetStepServe: 'HTTPS address',
@@ -97,14 +97,11 @@ export const en = {
   tailnetLogPath: 'Relay log',
   tailnetPending: 'Waiting',
   tailnetAccessTitle: 'DSH Remote connection details',
-  tailnetAccessHint: 'Give the service address and account to a client to connect to this machine. Stop the remote service before changing the account or password; changes apply the next time it starts.',
+  tailnetAccessHintRunning: 'Stop the remote service before changing the machine name, account or password.',
+  tailnetAccessHintStopped: 'Start the remote service, then fill in the details below in a DSH Remote client to connect to this machine.',
   tailnetSave: 'Save',
   tailnetSaved: 'Saved',
-  tailnetPhaseDisabled: 'Stopped',
-  tailnetPhaseProbing: 'Checking Tailscale',
-  tailnetPhaseStarting: 'Starting relay',
-  tailnetPhaseReady: 'Ready',
-  tailnetPhaseError: 'Failed',
+
   openInBrowser: 'Continue in browser',
 } as const
 
@@ -188,7 +185,7 @@ export const zh: Record<keyof typeof en, string> = {
 
   tailnetTitle: '连接信息',
   tailnetHint: '打开任意支持 DSH Remote 的客户端，填入下面的地址和账号。',
-  tailnetStatus: '状态',
+
   tailnetStepTailscale: 'Tailscale',
   tailnetStepRelay: '本地中继',
   tailnetStepServe: 'HTTPS 地址',
@@ -204,14 +201,11 @@ export const zh: Record<keyof typeof en, string> = {
   tailnetLogPath: '中继日志',
   tailnetPending: '等待中',
   tailnetAccessTitle: 'DSH Remote 连接信息',
-  tailnetAccessHint: '把下面的服务地址和账号交给客户端即可连接本机。修改账号密码前请先停止远程服务，保存后会在下次开启远程服务时生效。',
+  tailnetAccessHintRunning: '修改本机名称、账号或密码前请先停止远程服务',
+  tailnetAccessHintStopped: '启动远程服务后在 DSH Remote 客户端填入以下信息即可连接本机',
   tailnetSave: '保存',
   tailnetSaved: '已保存',
-  tailnetPhaseDisabled: '已停止',
-  tailnetPhaseProbing: '正在检测 Tailscale',
-  tailnetPhaseStarting: '正在启动中继',
-  tailnetPhaseReady: '已就绪',
-  tailnetPhaseError: '失败',
+
   openInBrowser: '在浏览器中继续',
 }
 

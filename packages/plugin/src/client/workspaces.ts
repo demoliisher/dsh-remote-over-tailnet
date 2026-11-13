@@ -1,5 +1,5 @@
 import { renderBodyPortal } from './portal.js'
-import type { LocaleKey, Translate } from '../client-locale.js'
+import type { Translate } from '../client-locale.js'
 import type { StatusFeed } from '../status-stream.js'
 import { messageOf, startupErrorMessage } from './presentation.js'
 import type {
@@ -10,16 +10,7 @@ import type {
   SidebarEntryPreference,
   SidebarEntryStyle,
   TailnetCredentialsView,
-  TailnetView,
 } from './types.js'
-
-const tailnetPhaseKeys: Record<TailnetView['phase'], LocaleKey> = {
-  disabled: 'tailnetPhaseDisabled',
-  probing: 'tailnetPhaseProbing',
-  starting: 'tailnetPhaseStarting',
-  ready: 'tailnetPhaseReady',
-  error: 'tailnetPhaseError',
-}
 
 export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalRenderer) {
   /**
@@ -90,7 +81,9 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     const { t } = props
     const [open, setOpen] = React.useState(false)
     const [status, setStatus] = React.useState<RemoteStatus | undefined>(undefined)
-    const [busy, setBusy] = React.useState(false)
+    const [saving, setSaving] = React.useState(false)
+    const [serviceBusy, setServiceBusy] = React.useState(false)
+    const [refreshing, setRefreshing] = React.useState(false)
     // 中继账号密码按需读取：状态推送里不带密码，面板打开时才向 Host 要。
     const [relayCredentials, setRelayCredentials] = React.useState<TailnetCredentialsView | undefined>(undefined)
     const [relayAccountDraft, setRelayAccountDraft] = React.useState('')
@@ -167,7 +160,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     }, [open, status?.deviceName])
 
     const refreshRemote = async (): Promise<void> => {
-      setBusy(true)
+      setRefreshing(true)
       setError(undefined)
       try {
         const nextStatus = await props.control<RemoteStatus>('status')
@@ -176,7 +169,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
       } catch (reason) {
         setError(messageOf(reason, t))
       } finally {
-        setBusy(false)
+        setRefreshing(false)
       }
     }
 
@@ -198,7 +191,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
       const saveName = deviceNameChanged
       const saveCredentials = !credentialsLocked && credentialsChanged
       if (!deviceNameValid || (!saveName && !saveCredentials)) return
-      setBusy(true)
+      setSaving(true)
       setError(undefined)
       setSaved(false)
       try {
@@ -217,19 +210,19 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
       } catch (reason) {
         setError(messageOf(reason, t))
       } finally {
-        setBusy(false)
+        setSaving(false)
       }
     }
 
     const setRemoteService = async (enabled: boolean): Promise<void> => {
-      setBusy(true)
+      setServiceBusy(true)
       setError(undefined)
       try {
         setStatus(await props.control<RemoteStatus>('service.set', { enabled }))
       } catch (reason) {
         setError(messageOf(reason, t))
       } finally {
-        setBusy(false)
+        setServiceBusy(false)
       }
     }
 
@@ -275,16 +268,9 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     // 连接数只跟随远程服务开关：关闭时不显示，开启时没有客户端也显示 0。
     const connectedClients = status?.host?.connectedClients ?? []
     const connectedClientCount = status?.host?.enabled === true ? connectedClients.length : undefined
-    const relayPhaseLabel = tailnet === undefined || tailnet === null
-      ? t('tailnetPhaseDisabled')
-      : t(tailnetPhaseKeys[tailnet.phase])
-    const relayPhaseClass = tailnet === undefined || tailnet === null
-      ? ''
-      : tailnet.phase === 'ready'
-        ? ' isReady'
-        : tailnet.phase === 'error'
-          ? ' isError'
-          : ''
+    const accessHint = serviceEnabled === true
+      ? t('tailnetAccessHintRunning')
+      : t('tailnetAccessHintStopped')
     const relayAddressField = serviceAddress === undefined ? null : React.createElement('label', { className: 'dshRemoteRelayAddressField' },
       React.createElement('span', { className: 'dshRemoteRelayFieldLabel' }, t('tailnetServerAddress')),
       React.createElement('div', { className: 'dshRemoteRelayAddressBox' },
@@ -314,12 +300,8 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     },
       React.createElement('div', { className: 'dshRemoteRelayAccessHeading' },
         React.createElement('div', { className: 'dshRemoteSectionTitle' },
-          React.createElement('strong', null, t('tailnetAccessTitle')),
-          React.createElement('span', {
-            className: 'dshRemoteStatusChip' + relayPhaseClass,
-            'aria-label': t('tailnetStatus'),
-          }, relayPhaseLabel)),
-        React.createElement('p', null, t('tailnetAccessHint'))),
+          React.createElement('strong', null, t('tailnetAccessTitle'))),
+        React.createElement('p', null, accessHint)),
       tailnet?.error === undefined ? null : React.createElement('p', { className: 'dshRemoteError', role: 'alert' },
         tailnet.error.message,
         tailnet.error.actionUrl === undefined ? null : React.createElement('a', {
@@ -374,6 +356,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
               role: 'switch',
               'aria-label': t('remoteService'),
               checked: status?.host?.enabled === true,
+              disabled: saving || serviceBusy,
               onChange: (event: Event) => void setRemoteService((event.target as HTMLInputElement).checked),
             }),
             connectedClientCount === undefined
@@ -392,9 +375,9 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
           saved ? React.createElement('span', { className: 'dshRemoteRelaySaved' }, t('tailnetSaved')) : null,
           React.createElement('button', {
             type: 'button',
-            disabled: busy || !deviceNameValid || (!deviceNameChanged && (credentialsLocked || !credentialsChanged)),
+            disabled: saving || serviceBusy || !deviceNameValid || (!deviceNameChanged && (credentialsLocked || !credentialsChanged)),
             onClick: () => void saveChanges(),
-          }, t(busy ? 'saving' : 'tailnetSave')))))
+          }, t(saving ? 'saving' : 'tailnetSave')))))
 
     const errorNotice = error === undefined
       ? null
@@ -428,7 +411,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
               React.createElement('button', {
                 type: 'button',
                 className: 'dshRemotePageRefresh',
-                disabled: busy,
+                disabled: refreshing,
                 title: t('refreshRemote'),
                 'aria-label': t('refreshRemote'),
                 onClick: () => void refreshRemote(),
