@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: true
+
+jobs:
+  quality:
+    name: Check, test, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.9.0
+          cache: pnpm
+
+      # 内嵌节点由 Go 源码编译成 wasm，构建步骤需要对应工具链。
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: packages/plugin/tsnet-src/go.mod
+          cache-dependency-path: packages/plugin/tsnet-src/go.sum
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check types
+        run: pnpm -r check
+
+      - name: Run tests
+        run: pnpm -r test
+
+      - name: Build packages
+        run: pnpm -r build
+
+      - name: Verify npm tarball contents
+        run: node scripts/verify-package-contents.mjs
