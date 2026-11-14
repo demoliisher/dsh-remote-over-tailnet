@@ -302,6 +302,14 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
         React.createElement('div', { className: 'dshRemoteSectionTitle' },
           React.createElement('strong', null, t('tailnetAccessTitle'))),
         React.createElement('p', null, accessHint)),
+      // 新装时节点停在授权等待，授权链接在这个弹窗里也要能直接点开。
+      tailnet?.phase === 'auth-required' && tailnet.authUrl !== undefined
+        ? React.createElement('p', { className: 'dshRemoteTailnetAuth' },
+          t('tailnetAuthorizeHint'),
+          React.createElement('a', {
+            href: tailnet.authUrl, target: '_blank', rel: 'noreferrer',
+          }, t('openInBrowser')))
+        : null,
       tailnet?.error === undefined ? null : React.createElement('p', { className: 'dshRemoteError', role: 'alert' },
         tailnet.error.message,
         tailnet.error.actionUrl === undefined ? null : React.createElement('a', {
