@@ -107,4 +107,6 @@ Get-CimInstance Win32_Process -Filter "Name='DeepSeek Harness.exe'" |
 
 ## 测试
 
-默认不跑完整测试套件（会打开窗口占用显卡）。需要时只跑单个测试文件，并在改动说明里写清原因。
+完整测试用 `pnpm -r test`（持续集成里跑的就是这一条），单个文件用 `pnpm --filter <包名> exec vitest run <文件>`。
+
+Windows 上不需要开发者模式或符号链接权限也能跑通大部分测试，但有 6 个用例依赖符号链接，在没有 `SeCreateSymbolicLinkPrivilege` 的普通账户下会失败，报 `EPERM`：`packages/plugin/tests/codex-domain.test.ts` 的 147、987 行，`harness-remote-bridge.test.ts` 的 878 行，`workspace-upload.test.ts` 的 56、149、167 行。启用开发者模式或换到 Linux、macOS 后这些用例照常通过。
