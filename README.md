@@ -1,5 +1,7 @@
 # Remote Over Tailnet
 
+[![CI](https://github.com/demoliisher/dsh-remote-over-tailnet/actions/workflows/ci.yml/badge.svg)](https://github.com/demoliisher/dsh-remote-over-tailnet/actions/workflows/ci.yml)
+
 项目全名 `dsh-remote-over-tailnet`，文档中简称 ROT。
 
 ROT 是 DeepSeek Harness Desktop 的 Host 插件，主要面向 Windows 上的 DeepSeek Harness Desktop 用户：开启远程服务后，同一 tailnet 内的 DSH Remote 客户端可以继续操作本机正在运行的会话，逐字流式输出保持原样，电脑不需要公网 IP、端口映射或第三方网关。DSH Go 是其中一个安卓客户端，任何接入 DSH Remote 的程序都可以连接。
