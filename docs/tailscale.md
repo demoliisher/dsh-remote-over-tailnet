@@ -53,6 +53,14 @@ ROT 不依赖系统安装的 Tailscale：插件把 tsnet 编译成 WebAssembly �
 
 凭据保存在 `$DSH_HOME/dsh-remote-over-tailnet/tailnet/credentials.json`（权限 0600）。弹窗里可以查看并复制；删除该文件后插件会重新生成账号密码，中继数据中的旧令牌随之失效，Host 会自动重新注册。
 
+### 和 ds-harness-remote 不能同时装
+
+本插件与上游插件 `ds-harness-remote` 注册同一个 DSH Remote 服务（`dshRemote`）和同一条控制接口前缀 `/ds-harness-remote`，两者只能有一个生效：谁先加载谁可用，另一个要么拿不到服务，要么注册接口时报 `duplicate prefix route "/ds-harness-remote"`。加载顺序每次启动都可能不同。
+
+本插件失去接口时不会启动内嵌节点与中继，表现是弹窗一直停在「启动远程服务后…」、节点在 `tailscale status` 里离线。请把 `ds-harness-remote` 卸载或从 profile 的 bundle 列表里移除后重启 Desktop。
+
+本插件面向用 tailnet 组网、电脑只作被控端的用户，用不到 `ds-harness-remote` 的公共网关与其他功能，因此只保留一个即可。
+
 ### 想放到数据盘
 
 把配置里的 `tailnet.dataDirectory` 改到数据盘目录。节点状态、凭据、中继的 `state.json`、日志与锁都会写入该目录。

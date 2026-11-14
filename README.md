@@ -42,6 +42,7 @@ ROT 是 DeepSeek Harness Desktop 的 Host 插件，主要面向 Windows 上的 D
 ## 限制
 
 - 内嵌节点只提供 tailnet 内的访问，不做 Funnel，tailnet 之外的设备连不上。
+- 不能与上游插件 `ds-harness-remote` 同时启用。两者注册同一个 DSH Remote 服务与控制接口，只有先加载的一方可用，先后顺序每次启动都不确定；本插件失去接口时不会启动内嵌节点与中继。详见 [Tailscale 要求与排障](docs/tailscale.md)。
 - 不修改客户端，也不支持扫码配对，需要在客户端中手动填写服务器地址与账号密码。本插件面向所有接入 DSH Remote 的客户端，DSH Go 只是其中之一。
 - 本插件与 Tailscale Inc.、DeepSeek 均无关联，未获其背书。
 

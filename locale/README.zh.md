@@ -16,6 +16,6 @@
 3. 首次开启时左下角入口的弹窗给出授权链接，在浏览器里登录 tailnet 账号并同意加入；也可以在配置里填 `tailnet.authKey` 跳过这一步。
 4. 在 DSH Remote 客户端（例如 DSH Go）中添加自定义服务器，填入弹窗显示的地址与账号密码。
 
-前置条件：客户端设备与电脑在同一个 tailnet，且客户端设备的 Tailscale 在线。
+前置条件：客户端设备与电脑在同一个 tailnet，且客户端设备的 Tailscale 在线。本插件与上游插件 `ds-harness-remote` 不能同时启用，两者抢同一个 DSH Remote 服务与控制接口，请只保留一个；细节见仓库根目录的 `docs/tailscale.md`。
 
 本项目衍生自 MIT 项目 ds-harness-remote，与 Tailscale Inc.、DeepSeek 均无关联。
