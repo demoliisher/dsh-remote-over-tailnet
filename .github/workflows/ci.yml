@@ -47,14 +47,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # 工作区内的包互相引用构建产物（`types` 指向 dist），先构建再检查类型与跑测试。
+      - name: Build packages
+        run: pnpm -r build
+
       - name: Check types
         run: pnpm -r check
 
       - name: Run tests
         run: pnpm -r test
-
-      - name: Build packages
-        run: pnpm -r build
 
       - name: Verify npm tarball contents
         run: node scripts/verify-package-contents.mjs
