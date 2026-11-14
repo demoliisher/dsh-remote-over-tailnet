@@ -28,11 +28,13 @@ pnpm install
 pnpm -r build
 ```
 
-`packages/plugin` 的构建包含四步：校验版本同步、编译内嵌节点、TypeScript 编译、esbuild 打包。内嵌节点由 `scripts/build-tsnet.mjs` 编译：`tsnet-src` 下的 Go 源码比 `tsnet/tsnet.wasm` 新时才重新调用 `go build`（`GOOS=js GOARCH=wasm`），否则跳过。产物为：
+`packages/plugin` 的构建包含四步：校验版本同步、编译内嵌节点、TypeScript 编译、esbuild 打包。内嵌节点由 `scripts/build-tsnet.mjs` 编译：`tsnet-src` 下的 Go 源码比 `tsnet/tsnet.wasm` 新，或者脚本里的 `ts_omit_*` 编译标记清单变了，才重新调用 `go build`（`GOOS=js GOARCH=wasm`），否则跳过。产物为：
 
 - `packages/plugin/dist/index.js`：Host 侧插件入口
 - `packages/plugin/dist/client.github.js`：浏览器客户端面板
 - `packages/plugin/tsnet/tsnet.wasm`：内嵌 Tailscale 节点（被 gitignore，由根 `package.json` 的 `files` 中 `packages/plugin/tsnet` 带入发布包）
+
+内嵌节点只用来加入 tailnet、监听端口并转发给中继，客户端其余功能按 `ts_omit_*` 标记在编译期摘掉，产物约 32 MB（不摘是 36.9 MB）。标记清单在 `scripts/build-tsnet.mjs` 的 `omitFeatures`，恢复某个功能就删掉对应一行；`netstack`、`magicsock`、`portmapper`、`useproxy` 与 DNS 解析不要摘，摘了节点连不上。
 
 内嵌节点是目录级资产，编译器与单元测试都不会发现它缺席，发布前用 `npm pack --dry-run` 确认列表里有 `packages/plugin/tsnet/tsnet.wasm` 与 `wasm_exec.js`。缺了这两项的包装上去以后，插件启动内嵌节点会直接报找不到文件。
 

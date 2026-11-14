@@ -13,7 +13,6 @@ export interface TsnetNodeStatus {
   hostName?: string
   tailscaleIPs?: string[]
   online?: boolean
-  health?: string[]
   running?: boolean
   error?: string
   version?: string

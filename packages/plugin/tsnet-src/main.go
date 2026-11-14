@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"tailscale.com/dshwasm/tsnetx"
-	"tailscale.com/ipn/ipnstate"
 )
 
 type startOptions struct {
@@ -198,16 +197,7 @@ func (b *bridge) statusValue() js.Value {
 		out["tailscaleIPs"] = ips
 		out["online"] = st.Self.Online
 	}
-	out["health"] = healthMessages(st)
 	return js.ValueOf(out)
-}
-
-func healthMessages(st *ipnstate.Status) []any {
-	out := make([]any, 0, len(st.Health))
-	for _, h := range st.Health {
-		out = append(out, h)
-	}
-	return out
 }
 
 func (b *bridge) jsStatus(this js.Value, args []js.Value) any {
