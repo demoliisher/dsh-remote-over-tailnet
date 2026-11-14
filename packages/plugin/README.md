@@ -9,7 +9,7 @@ DeepSeek Harness Desktop 的 Host 插件，项目文档简称 ROT。主要面向
 在 DeepSeek Harness Desktop 的插件管理中从 npm 安装当前版本，然后重启 Desktop：
 
 ```text
-dsh-remote-over-tailnet@0.6.4
+dsh-remote-over-tailnet@0.1.0
 ```
 
 也可以使用官方 `dsh` 启动器安装到对应 profile。本地开发时可用 `link:` 指向仓库，参考根目录的 `docs/development.md`。

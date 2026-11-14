@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-over-tailnet",
-  "version": "0.6.4",
+  "version": "0.1.0",
   "description": "Tailscale-based remote access host plugin for DeepSeek Harness (fork of ds-harness-remote).",
   "keywords": [
     "deepseek",

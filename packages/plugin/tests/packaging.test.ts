@@ -12,6 +12,17 @@ describe('publish layout', () => {
     expect(manifest.files).toContain('packages/plugin/tsnet')
   })
 
+  it('keeps every manifest reporting the same plugin version', async () => {
+    const read = async (url: URL) => JSON.parse(await readFile(url, 'utf8')) as { version?: string }
+    const rootManifest = await read(new URL('../../../package.json', import.meta.url))
+    const pluginManifest = await read(new URL('../package.json', import.meta.url))
+    const rootDescriptor = await read(new URL('../../../dsh-plugin.json', import.meta.url))
+    const pluginDescriptor = await read(new URL('../dsh-plugin.json', import.meta.url))
+    expect(rootManifest.version).toBe(pluginManifest.version)
+    expect(rootDescriptor.version).toBe(rootManifest.version)
+    expect(pluginDescriptor.version).toBe(rootManifest.version)
+  })
+
   it('keeps the workspace copy private so only the root package is publishable', async () => {
     const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')) as { private?: boolean }
     expect(manifest.private).toBe(true)
