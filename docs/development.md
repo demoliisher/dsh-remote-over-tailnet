@@ -86,7 +86,7 @@ Get-CimInstance Win32_Process -Filter "Name='DeepSeek Harness.exe'" |
 
 1. 日志出现 `tailnet node ready` 与 `publicUrl`，`tailscale status` 里能看到 `dsh-remote` 节点。
 2. 面板显示的服务地址加 `/health` 返回 `{"status":"ok"}`。
-3. 插件详情页的「远程设置」显示服务器地址、账号、密码与四步状态。
+3. 左下角「Remote Over Tailnet」入口的弹窗显示服务器地址、账号、密码；插件详情页只保留服务开关、连接状态与诊断项。
 4. DSH Remote 客户端填入地址与账号密码后能连上已有会话并看到逐字输出。
 
 没有第二台设备时，可以用 `node .scratch/e2e-client-probe.mjs <服务地址>` 直接跑一遍真实客户端流程，输出 `DEVICES`、`CONNECTED_MS` 与 `DESCRIBE` 即代表登录、握手与 RPC 全部可用。

@@ -15,8 +15,6 @@ import type {
   RemoteStatus,
   SidebarEntryPreference,
   SidebarEntryStyle,
-  TailnetCredentialsView,
-  TailnetView,
 } from './types.js'
 
 const sidebarEntryChoices: ReadonlyArray<{ value: SidebarEntryStyle; label: 'sidebarEntryStandard' | 'sidebarEntryCompact' }> = [
@@ -54,11 +52,6 @@ export function createRemotePluginOptions(React: ClientReact) {
     const [sidebarEntry, setSidebarEntry] = React.useState<SidebarEntryStyle>(() => props.sidebarEntry?.read?.() ?? 'standard')
     const [sidebarEntryBusy, setSidebarEntryBusy] = React.useState(false)
     const [reconnectBusy, setReconnectBusy] = React.useState(false)
-    const [tailnetView, setTailnetView] = React.useState<TailnetView | undefined>(undefined)
-    const [tailnetBusy, setTailnetBusy] = React.useState(false)
-    const [tailnetSecret, setTailnetSecret] = React.useState<TailnetCredentialsView | undefined>(undefined)
-    const [tailnetSecretBusy, setTailnetSecretBusy] = React.useState(false)
-    const [tailnetSecretVisible, setTailnetSecretVisible] = React.useState(false)
     const [tailnetCopied, setTailnetCopied] = React.useState<string | undefined>(undefined)
     const [notice, setNotice] = React.useState<LocalizedMessage | undefined>(undefined)
     const [error, setError] = React.useState<string | undefined>(undefined)
@@ -84,7 +77,6 @@ export function createRemotePluginOptions(React: ClientReact) {
     // connection row; the settings snapshot is re-read only when the identity
     // changes, so ordinary connection frames do not refetch it.
     React.useEffect(() => {
-      setTailnetView(status?.tailnet ?? undefined)
       const key = JSON.stringify([
         status?.deviceName,
         status?.host?.deviceId,
@@ -178,36 +170,6 @@ export function createRemotePluginOptions(React: ClientReact) {
       }
     }
 
-    const refreshTailnet = async (): Promise<void> => {
-      if (tailnetBusy) return
-      setTailnetBusy(true)
-      setError(undefined)
-      try {
-        setTailnetView((await props.control<TailnetView | null>('tailnet.status')) ?? undefined)
-      } catch (reason) {
-        setError(messageOf(reason, t))
-      } finally {
-        setTailnetBusy(false)
-      }
-    }
-
-    const revealTailnetSecret = async (): Promise<void> => {
-      if (tailnetSecret !== undefined) {
-        setTailnetSecretVisible(current => !current)
-        return
-      }
-      setTailnetSecretBusy(true)
-      setError(undefined)
-      try {
-        setTailnetSecret(await props.control<TailnetCredentialsView>('tailnet.credentials'))
-        setTailnetSecretVisible(true)
-      } catch (reason) {
-        setError(messageOf(reason, t))
-      } finally {
-        setTailnetSecretBusy(false)
-      }
-    }
-
     const copyTailnet = async (value: string, tag: string): Promise<void> => {
       try {
         await navigator.clipboard.writeText(value)
@@ -218,93 +180,6 @@ export function createRemotePluginOptions(React: ClientReact) {
       setTailnetCopied(tag)
       setTimeout(() => setTailnetCopied(current => (current === tag ? undefined : current)), 2_000)
     }
-
-    const tailnetStep = (label: string, step: { ok: boolean | null; detail: string }) =>
-      React.createElement('div', { className: 'dshRemoteTailnetStep' },
-        React.createElement('span', {
-          className: 'dshRemoteTailnetDot' + (step.ok === true ? ' isOk' : step.ok === false ? ' isFail' : ''),
-          'aria-hidden': true,
-        }),
-        React.createElement('div', null,
-          React.createElement('strong', null, label),
-          React.createElement('p', null, step.detail)))
-
-    const tailnetField = (label: string, value: string, tag: string) =>
-      React.createElement('div', { className: 'dshRemoteTailnetField' },
-        React.createElement('span', null, label),
-        React.createElement('code', null, value),
-        React.createElement('button', {
-          type: 'button',
-          className: 'dshRemoteDiscard',
-          onClick: () => void copyTailnet(value, tag),
-        }, t(tailnetCopied === tag ? 'tailnetCopied' : 'tailnetCopy')))
-
-    const tailnetPasswordField = tailnetView?.enabled !== true || tailnetView.account === undefined
-      ? null
-      : tailnetSecret === undefined
-        ? React.createElement('div', { className: 'dshRemoteTailnetField' },
-          React.createElement('span', null, t('tailnetPassword')),
-          React.createElement('code', null, '••••••••••••'),
-          React.createElement('button', {
-            type: 'button',
-            className: 'dshRemoteDiscard',
-            disabled: tailnetSecretBusy,
-            onClick: () => void revealTailnetSecret(),
-          }, t(tailnetSecretBusy ? 'tailnetPending' : 'tailnetShowSecret')))
-        : React.createElement('div', { className: 'dshRemoteTailnetField' },
-          React.createElement('span', null, t('tailnetPassword')),
-          React.createElement('code', null, tailnetSecretVisible ? tailnetSecret.password : '••••••••••••'),
-          React.createElement('button', {
-            type: 'button',
-            className: 'dshRemoteDiscard',
-            disabled: tailnetSecretBusy,
-            onClick: () => void revealTailnetSecret(),
-          }, t(tailnetSecretVisible ? 'tailnetHideSecret' : 'tailnetShowSecret')),
-          React.createElement('button', {
-            type: 'button',
-            className: 'dshRemoteDiscard',
-            onClick: () => void copyTailnet(tailnetSecret.password, 'password'),
-          }, t(tailnetCopied === 'password' ? 'tailnetCopied' : 'tailnetCopy')))
-
-    const tailnetSetting = tailnetView === undefined
-      ? null
-      : React.createElement('section', { className: 'dshRemoteTailnetSettings' },
-        React.createElement('div', { className: 'dshRemoteTailnetHeading' },
-          React.createElement('strong', null, t('tailnetTitle')),
-          React.createElement('p', null, t('tailnetHint'))),
-        tailnetView.phase === 'auth-required' && tailnetView.authUrl !== undefined
-          ? React.createElement('p', { className: 'dshRemoteTailnetAuth' },
-            t('tailnetAuthorizeHint'),
-            React.createElement('a', {
-              href: tailnetView.authUrl, target: '_blank', rel: 'noreferrer',
-            }, t('openInBrowser')))
-          : null,
-        tailnetView.enabled && tailnetView.publicUrl !== undefined
-          ? tailnetField(t('tailnetServerAddress'), tailnetView.publicUrl, 'address')
-          : null,
-        React.createElement('div', { className: 'dshRemoteTailnetSteps' },
-          tailnetStep(t('tailnetStepNode'), tailnetView.steps.node),
-          tailnetStep(t('tailnetStepRelay'), tailnetView.steps.relay),
-          tailnetStep(t('tailnetStepListen'), tailnetView.steps.listen),
-          tailnetStep(t('tailnetStepAuthorize'), tailnetView.steps.authorize)),
-        tailnetView.enabled && tailnetView.account !== undefined
-          ? tailnetField(t('tailnetAccount'), tailnetView.account, 'account')
-          : null,
-        tailnetPasswordField,
-        tailnetView.error === undefined
-          ? null
-          : React.createElement('p', { className: 'dshRemoteError', role: 'alert' },
-            tailnetView.error.message,
-            tailnetView.error.actionUrl === undefined ? null : React.createElement('a', {
-              href: tailnetView.error.actionUrl, target: '_blank', rel: 'noreferrer',
-            }, t('openInBrowser'))),
-        React.createElement('div', { className: 'dshRemoteTailnetFooter' },
-          React.createElement('button', {
-            type: 'button',
-            className: 'dshRemoteDiscard',
-            disabled: tailnetBusy,
-            onClick: () => void refreshTailnet(),
-          }, t(tailnetBusy ? 'tailnetPending' : 'tailnetRefresh'))))
 
     const developmentSetting = React.createElement(React.Fragment, null,
       React.createElement('div', { className: 'dshRemoteAuthorizationSetting' },
@@ -366,7 +241,7 @@ export function createRemotePluginOptions(React: ClientReact) {
 
     if (props.view === 'summary') return React.createElement('span', null, t('pluginDescription'))
 
-    const logPath = tailnetView?.logPath
+    const logPath = status?.tailnet?.logPath
     const settingsBody = !loaded
       ? React.createElement('p', { className: 'dshRemoteSettingsState' }, error ?? t('loadingSettings'))
       : React.createElement('div', { className: 'dshRemoteSettings' },
@@ -419,7 +294,6 @@ export function createRemotePluginOptions(React: ClientReact) {
           ? null
           : React.createElement('p', { className: 'dshRemoteConnectionIssue', role: 'status' },
             connectionErrorMessage(host.error, t)),
-        tailnetSetting,
         React.createElement('section', { className: 'dshRemoteSettingsGroup' },
           React.createElement('strong', { className: 'dshRemoteGroupTitle' }, t('diagnosticsTitle')),
           developmentSetting,
