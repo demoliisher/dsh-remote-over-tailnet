@@ -13,6 +13,17 @@
     "webrtc"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/demoliisher/dsh-remote-over-tailnet.git"
+  },
+  "homepage": "https://github.com/demoliisher/dsh-remote-over-tailnet#readme",
+  "bugs": {
+    "url": "https://github.com/demoliisher/dsh-remote-over-tailnet/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
   "type": "module",
   "main": "./index.js",
   "types": "./packages/plugin/public.d.ts",
@@ -35,6 +46,7 @@
     "packages/plugin/public.d.ts",
     "packages/plugin/server/dist/main.cjs",
     "packages/plugin/server/version.json",
+    "packages/plugin/tsnet",
     "dsh-plugin.json",
     "cordis.patch.yml",
     "locale/",

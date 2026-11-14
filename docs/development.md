@@ -32,7 +32,9 @@ pnpm -r build
 
 - `packages/plugin/dist/index.js`：Host 侧插件入口
 - `packages/plugin/dist/client.github.js`：浏览器客户端面板
-- `packages/plugin/tsnet/tsnet.wasm`：内嵌 Tailscale 节点（被 gitignore，随包分发时由 `files` 中的 `tsnet` 带入）
+- `packages/plugin/tsnet/tsnet.wasm`：内嵌 Tailscale 节点（被 gitignore，由根 `package.json` 的 `files` 中 `packages/plugin/tsnet` 带入发布包）
+
+内嵌节点是目录级资产，编译器与单元测试都不会发现它缺席，发布前用 `npm pack --dry-run` 确认列表里有 `packages/plugin/tsnet/tsnet.wasm` 与 `wasm_exec.js`。缺了这两项的包装上去以后，插件启动内嵌节点会直接报找不到文件。
 
 客户端 bundle 注册的模块 id 来自 `packages/plugin/package.json` 的 `name`，改名时必须一起改。
 

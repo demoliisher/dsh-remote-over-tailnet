@@ -1,6 +1,7 @@
 {
   "name": "dsh-remote-over-tailnet",
   "version": "0.6.4",
+  "private": true,
   "description": "Tailscale-based, end-to-end encrypted remote access to DeepSeek Harness workspaces from mobile clients (fork of ds-harness-remote).",
   "keywords": [
     "deepseek",

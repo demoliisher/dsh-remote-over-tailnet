@@ -12,6 +12,16 @@ ROT 是 DeepSeek Harness Desktop 的 Host 插件，主要面向 Windows 上的 D
 - 一个可用的 tailnet 账号；本机如何加入 tailnet 由插件自己完成，不需要安装系统 Tailscale
 - 客户端设备与电脑在同一个 tailnet，且已安装 Tailscale；客户端需支持 DSH Remote（例如安卓上的 DSH Go）
 
+## 安装
+
+把 ROT 装进要对外提供远程访问的那个 profile（桌面版默认是 `web`），然后重启 DeepSeek Harness Desktop：
+
+```powershell
+dsh plugin --profile web add dsh-remote-over-tailnet
+```
+
+也可以在插件页点「添加插件」（Add plugin）选中已经构建好的插件目录，这种方式适合自己构建的用户，构建步骤见[开发、构建与本地验证](docs/development.md)。仓库里不保存构建产物，直接克隆源码的目录装不了。
+
 ## 使用
 
 1. 安装 ROT，重启 DeepSeek Harness Desktop。
