@@ -54,11 +54,15 @@ await buildBundle({
   // after it. The official Connection package stays external because the Host
   // composition must supply that one shared peer instance; `@roamhq/wrtc` stays
   // an optional native load.
-  external: ['@deepseek-ai/dsh-client-connection', '@roamhq/wrtc'],
+  // cpu-features 是 ssh2 的可选原生加速，ssh2 自己在 try/catch 里 require；它引用的 .node
+  // 既不在包里也无法跨机器通用，留在外部让运行时回退到纯 JS 实现。
+  external: ['@deepseek-ai/dsh-client-connection', '@roamhq/wrtc', 'cpu-features'],
   // Inlined CommonJS dependencies require Node builtins lazily. A lexical
   // require keeps esbuild's __require working in pure ESM without a global shim.
+  // 内联的 CommonJS 依赖（ssh2 自带的 browserify 化 crypto）还会直接读 __dirname，
+  // ESM 里没有这两个标识符，用 banner 补上等价定义。
   banner: {
-    js: 'import { createRequire as __dshCreateRequire } from "node:module";\nconst require = __dshCreateRequire(import.meta.url);',
+    js: 'import { createRequire as __dshCreateRequire } from "node:module";\nimport { dirname as __dshDirname } from "node:path";\nimport { fileURLToPath as __dshFileURLToPath } from "node:url";\nconst require = __dshCreateRequire(import.meta.url);\nconst __filename = __dshFileURLToPath(import.meta.url);\nconst __dirname = __dshDirname(__filename);',
   },
 })
 

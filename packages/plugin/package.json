@@ -69,6 +69,7 @@
     "@deepseek-ai/schemastery": "^3.18.5",
     "zod": "^4.6.7",
     "ws": "^8.21.3",
+    "ssh2": "^1.17.0",
     "@xterm/headless": "6.0.0",
     "@xterm/addon-serialize": "0.14.0"
   },
@@ -120,6 +121,7 @@
     }
   },
   "devDependencies": {
+    "@types/ssh2": "^1.15.5",
     "@deepseek-ai/cordis": "4.1.0",
     "@deepseek-ai/cordis-plugin-include": "1.1.0",
     "@deepseek-ai/cordis-plugin-loader": "1.1.0",

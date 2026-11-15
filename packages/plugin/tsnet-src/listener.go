@@ -27,6 +27,14 @@ var (
 
 func dshNet() js.Value { return js.Global().Get("dshNet") }
 
+// errValue 把错误转成 JS 侧可以直接判断的值：成功给 null，失败给字符串。
+func errValue(err error) js.Value {
+	if err == nil {
+		return js.Null()
+	}
+	return js.ValueOf(err.Error())
+}
+
 func bytesToJS(data []byte) js.Value {
 	arr := js.Global().Get("Uint8Array").New(len(data))
 	js.CopyBytesToJS(arr, data)
@@ -40,6 +48,26 @@ func (b *bridge) jsListen(this js.Value, args []js.Value) any {
 	}
 	tailPort := args[0].Int()
 	targetPort := args[1].Int()
+	return b.listenOnTail(tailPort, true, func(id int32) bool {
+		return dshNet().Call("dial", id, "127.0.0.1", targetPort).Bool()
+	})
+}
+
+// jsListenStream 在 tailnet 上监听指定端口，把每个入站连接原样交给 JS 侧；
+// SSH 服务在 Node 里直接接管这条字节流，不需要本机再有一个套接字。
+func (b *bridge) jsListenStream(this js.Value, args []js.Value) any {
+	if len(args) != 1 {
+		return "dshTsnet.listenStream 需要 tailPort 参数"
+	}
+	tailPort := args[0].Int()
+	return b.listenOnTail(tailPort, false, func(id int32) bool {
+		return dshNet().Call("accept", id, tailPort).Bool()
+	})
+}
+
+// listenOnTail 在 tailnet 端口上监听；attach 决定每个入站连接交给 JS 侧做什么，
+// 返回 false 表示 JS 拒收，连接随即关闭。
+func (b *bridge) listenOnTail(tailPort int, primary bool, attach func(id int32) bool) any {
 	b.mu.Lock()
 	srv := b.srv
 	b.mu.Unlock()
@@ -53,33 +81,38 @@ func (b *bridge) jsListen(this js.Value, args []js.Value) any {
 			return
 		}
 		b.mu.Lock()
-		b.listener = ln
+		if primary {
+			b.listener = ln
+		} else {
+			b.streamListener = ln
+		}
 		b.mu.Unlock()
-		go func() {
-			for {
-				conn, err := ln.Accept()
-				if err != nil {
-					return
-				}
-				id := atomic.AddInt32(&nextConnID, 1)
-				jc := &jsConn{id: id, conn: conn, inCh: make(chan []byte, 128), drain: make(chan struct{}, 1)}
-				connsMu.Lock()
-				conns[id] = jc
-				connsMu.Unlock()
-				dial := dshNet().Call("dial", id, "127.0.0.1", targetPort)
-				if !dial.Bool() {
-					connsMu.Lock()
-					delete(conns, id)
-					connsMu.Unlock()
-					conn.Close()
-					continue
-				}
-				go jc.pump()
-			}
-		}()
+		go b.acceptConns(ln, attach)
 		// 成功时返回数字端口，JS 侧按数字解析；只有失败才走 reject 的字符串。
 		resolve.Invoke(tailPort)
 	})
+}
+
+func (b *bridge) acceptConns(ln net.Listener, attach func(id int32) bool) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		id := atomic.AddInt32(&nextConnID, 1)
+		jc := &jsConn{id: id, conn: conn, inCh: make(chan []byte, 128), drain: make(chan struct{}, 1)}
+		connsMu.Lock()
+		conns[id] = jc
+		connsMu.Unlock()
+		if !attach(id) {
+			connsMu.Lock()
+			delete(conns, id)
+			connsMu.Unlock()
+			conn.Close()
+			continue
+		}
+		go jc.pump()
+	}
 }
 
 func (c *jsConn) pump() {
@@ -177,13 +210,33 @@ func (b *bridge) jsClosedFromJS(this js.Value, args []js.Value) any {
 	return nil
 }
 
-func (b *bridge) jsCloseListener(this js.Value, args []js.Value) any {
-	b.mu.Lock()
-	ln := b.listener
-	b.listener = nil
-	b.mu.Unlock()
-	if ln != nil {
-		return ln.Close().Error()
-	}
-	return nil
+// jsCloseStreamListener 只关闭 SSH 这类原始流端口，不动主中继监听。
+// 关停要等该端口的 accept 循环退出，放进 goroutine 里做，JS 侧拿 Promise。
+func (b *bridge) jsCloseStreamListener(this js.Value, args []js.Value) any {
+	return promise(func(resolve, reject js.Value) {
+		b.mu.Lock()
+		ln := b.streamListener
+		b.streamListener = nil
+		b.mu.Unlock()
+		if ln == nil {
+			resolve.Invoke(js.Null())
+			return
+		}
+		resolve.Invoke(errValue(ln.Close()))
+	})
+}
+
+// jsClosePrimaryListener 只关闭中继端口的监听，节点与 SSH 端口都保持原样。
+func (b *bridge) jsClosePrimaryListener(this js.Value, args []js.Value) any {
+	return promise(func(resolve, reject js.Value) {
+		b.mu.Lock()
+		ln := b.listener
+		b.listener = nil
+		b.mu.Unlock()
+		if ln == nil {
+			resolve.Invoke(js.Null())
+			return
+		}
+		resolve.Invoke(errValue(ln.Close()))
+	})
 }

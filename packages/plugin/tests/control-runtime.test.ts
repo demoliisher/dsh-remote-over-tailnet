@@ -192,7 +192,7 @@ describe('PluginControlRuntime remote service', () => {
     const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, host, tailnet))
 
     await expect(handler('service.set', { enabled: true }, signal())).resolves.toMatchObject({ ok: true })
-    expect(tailnet.start).toHaveBeenCalledOnce()
+    expect(tailnet.applyService).toHaveBeenCalledWith(true)
     expect(calls).toEqual(['setHostControl:true:undefined'])
     expect(settings.get().service).toEqual({ enabled: true })
   })
@@ -211,7 +211,7 @@ describe('PluginControlRuntime remote service', () => {
     expect(settings.get().service).toEqual({ enabled: true })
   })
 
-  it('stops the local relay and the embedded node when the remote service is turned off', async () => {
+  it('stops only the local relay when the remote service is turned off', async () => {
     const settings = settingsBinding({ serverUrl: 'http://127.0.0.1:8080' })
     const host = hostStub()
     const tailnet = tailnetStub({ snapshot: tailnetSnapshot() })
@@ -219,7 +219,8 @@ describe('PluginControlRuntime remote service', () => {
 
     await expect(handler('service.set', { enabled: false }, signal())).resolves.toMatchObject({ ok: true })
     expect(host.setHostControl).toHaveBeenCalledWith(false)
-    expect(tailnet.stop).toHaveBeenCalledOnce()
+    expect(tailnet.applyService).toHaveBeenCalledWith(false)
+    expect(tailnet.stop).not.toHaveBeenCalled()
     expect(tailnet.start).not.toHaveBeenCalled()
     expect(settings.get().service).toEqual({ enabled: false })
   })
@@ -461,9 +462,12 @@ function tailnetStub(options: {
     relayReady: vi.fn(() => options.relayReady ?? true),
     snapshot: vi.fn(() => options.snapshot),
     credentials: vi.fn(() => options.credentials),
+    sshCredentials: vi.fn(() => undefined),
     saveCredentials: options.saveCredentials ?? vi.fn(async () => options.snapshot),
     reportAuthorized: vi.fn(),
     reportAuthorizeFailure: vi.fn(),
+    applySsh: vi.fn(async () => options.snapshot),
+    applyService: vi.fn(async () => options.snapshot),
   }
 }
 

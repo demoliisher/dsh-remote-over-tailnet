@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import net from 'node:net'
 import type { Socket } from 'node:net'
+import { Duplex } from 'node:stream'
 import { readFile } from 'node:fs/promises'
 import { join, resolve as resolvePath } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -38,6 +39,12 @@ export interface TsnetNode {
   status(): TsnetNodeStatus
   /** 在 tailnet 上监听 tailPort，把每个入站连接转发到 127.0.0.1:targetPort。 */
   listen(tailPort: number, targetPort: number): Promise<number>
+  /** 在 tailnet 上监听 tailPort，把每条入站连接原样交给 onConnection（例如进程内的 SSH 服务）。 */
+  listenStream(tailPort: number, onConnection: (socket: Duplex) => void): Promise<number>
+  /** 关闭原始流端口，并断开其上已有的连接。 */
+  closeStream(): Promise<void>
+  /** 只关闭中继端口的监听；节点与原始流端口不受影响。 */
+  closeListener(): Promise<void>
   /** 经节点自己的 HTTP 客户端访问 url，用于确认监听链路可用。 */
   probe(url: string): Promise<{ status: number; body: string }>
   close(): Promise<void>
@@ -48,8 +55,11 @@ interface DshTsnetBridge {
   start(json: string): Promise<TsnetNodeStatus | string>
   status(): TsnetNodeStatus
   listen(tailPort: number, targetPort: number): Promise<string | number>
+  listenStream(tailPort: number): Promise<string | number>
+  closeStream(): Promise<string | null>
+  closePrimary(): Promise<string | null>
   probe(url: string): Promise<{ status: number; body: string } | string>
-  close(): string | null
+  close(): Promise<string | null>
   /** 把本机 socket 读到的字节交给 Go 侧连接；返回 false 表示队列已满。 */
   inbound(id: number, chunk: Uint8Array): boolean
   /** Go 侧连接把积压数据写完，本机 socket 可以继续读取。 */
@@ -73,6 +83,8 @@ interface NodeGlobals {
   dshTsnet?: DshTsnetBridge
   dshNet?: {
     dial(id: number, host: string, port: number): boolean
+    /** Go 侧收到一条原始流连接，交给 JS 侧按 tailPort 登记的处理函数。 */
+    accept(id: number, tailPort: number): boolean
     send(id: number, chunk: Uint8Array): boolean
     resume(id: number): void
     close(id: number): void
@@ -80,6 +92,66 @@ interface NodeGlobals {
 }
 
 const globals = globalThis as unknown as NodeGlobals
+
+/** 原样接管的 tailnet 连接：Go 侧把字节推进来，JS 侧写出的字节交回 Go。 */
+interface StreamPeer {
+  /** Go → JS。返回 false 表示 JS 侧读缓冲已满，等 read 时再让 Go 继续。 */
+  receive(chunk: Uint8Array): boolean
+  /** Go 侧待写队列已排空，可以继续接收 JS 的写入。 */
+  resume(): void
+  /** Go 侧连接已结束。 */
+  closed(): void
+}
+
+/** tail 端口到处理函数的登记表；入站连接原样交给服务自己处理。 */
+const streamHandlers = new Map<number, (socket: Duplex) => void>()
+const streamPeers = new Map<number, StreamPeer>()
+const streamSockets = new Map<number, Duplex>()
+
+/**
+ * 把一条 tailnet 连接包装成 Node 双工流。
+ *
+ * Go 侧不预拨本机套接字：它读到的字节经 send 推进来，JS 写出的字节经 inbound 交回去。
+ * push 返回 false 时 Go 阻塞在 drain 上，read 被调用时再放行，形成完整背压。
+ */
+function createStreamSocket(id: number): Duplex {
+  let pendingWrite: ((error?: Error | null) => void) | undefined
+  const socket = new Duplex({
+    read() {
+      globals.dshTsnet?.drain(id)
+    },
+    write(chunk: Buffer, _encoding: BufferEncoding, callback: (error?: Error | null) => void) {
+      const accepted = globals.dshTsnet?.inbound(id, chunk)
+      if (accepted === false) pendingWrite = callback
+      else callback()
+    },
+    final(callback: (error?: Error | null) => void) {
+      globals.dshTsnet?.closed(id)
+      callback()
+    },
+    destroy(error: Error | null, callback: (error?: Error | null) => void) {
+      streamPeers.delete(id)
+      streamSockets.delete(id)
+      globals.dshTsnet?.closed(id)
+      callback(error)
+    },
+  })
+  streamSockets.set(id, socket)
+  streamPeers.set(id, {
+    receive(chunk) {
+      return socket.push(Buffer.from(chunk))
+    },
+    resume() {
+      const callback = pendingWrite
+      pendingWrite = undefined
+      callback?.()
+    },
+    closed() {
+      socket.push(null)
+    },
+  })
+  return socket
+}
 
 /** 一个进程只能 go.run 一次，节点启停复用同一个运行时。 */
 let runtimePromise: Promise<DshTsnetBridge> | undefined
@@ -333,7 +405,15 @@ function installNetBridge(): void {
       })
       return true
     },
+    accept(id, tailPort) {
+      const handler = streamHandlers.get(tailPort)
+      if (handler === undefined) return false
+      handler(createStreamSocket(id))
+      return true
+    },
     send(id, chunk) {
+      const peer = streamPeers.get(id)
+      if (peer !== undefined) return peer.receive(chunk)
       const socket = sockets.get(id)
       if (socket === undefined || socket.destroyed) return false
       // Go 传来的 Uint8Array 是 wasm 线性内存的视图，必须复制后再交给 Node，
@@ -341,10 +421,20 @@ function installNetBridge(): void {
       return socket.write(Buffer.from(chunk))
     },
     resume(id) {
+      const peer = streamPeers.get(id)
+      if (peer !== undefined) {
+        peer.resume()
+        return
+      }
       const socket = sockets.get(id)
       if (socket !== undefined && !socket.destroyed) socket.resume()
     },
     close(id) {
+      const peer = streamPeers.get(id)
+      if (peer !== undefined) {
+        peer.closed()
+        return
+      }
       const socket = sockets.get(id)
       if (socket === undefined) return
       sockets.delete(id)
@@ -413,13 +503,33 @@ export async function connectEmbeddedNode(packageRoot: string): Promise<TsnetNod
       if (typeof result === 'string') throw new Error(fail(result))
       return Number(result)
     },
+    async listenStream(tailPort, onConnection) {
+      streamHandlers.set(tailPort, onConnection)
+      const result = await bridge.listenStream(tailPort)
+      if (typeof result === 'string') {
+        streamHandlers.delete(tailPort)
+        throw new Error(fail(result))
+      }
+      return Number(result)
+    },
+    async closeStream() {
+      streamHandlers.clear()
+      for (const socket of streamSockets.values()) socket.destroy()
+      streamSockets.clear()
+      const error = await bridge.closeStream()
+      if (error !== null) throw new Error(fail(error))
+    },
+    async closeListener() {
+      const error = await bridge.closePrimary()
+      if (error !== null) throw new Error(fail(error))
+    },
     async probe(url) {
       const result = await bridge.probe(url)
       if (typeof result === 'string') throw new Error(fail(result))
       return result
     },
     async close() {
-      const error = bridge.close()
+      const error = await bridge.close()
       if (error !== null) throw new Error(fail(error))
     },
   }

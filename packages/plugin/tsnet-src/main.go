@@ -28,6 +28,8 @@ type bridge struct {
 	lastErr  string
 	running  bool
 	listener net.Listener
+	// tailnet 上的 SSH 端口：入站连接整段交给 JS 侧的 SSH 服务，不经过本机套接字。
+	streamListener net.Listener
 }
 
 func main() {
@@ -37,6 +39,9 @@ func main() {
 		"status":  js.FuncOf(b.jsStatus),
 		"close":   js.FuncOf(b.jsClose),
 		"listen":  js.FuncOf(b.jsListen),
+		"listenStream": js.FuncOf(b.jsListenStream),
+		"closeStream":  js.FuncOf(b.jsCloseStreamListener),
+		"closePrimary": js.FuncOf(b.jsClosePrimaryListener),
 		"inbound": js.FuncOf(b.jsInbound),
 		"drain":   js.FuncOf(b.jsDrain),
 		"closed":  js.FuncOf(b.jsClosedFromJS),
@@ -204,21 +209,37 @@ func (b *bridge) jsStatus(this js.Value, args []js.Value) any {
 	return b.statusValue()
 }
 
+// jsClose 关闭节点。关停要等 accept 循环与各连接收尾，可能长时间不返回，
+// 因此放进 goroutine 里做，JS 侧拿到的是 Promise，事件循环不会被卡住。
 func (b *bridge) jsClose(this js.Value, args []js.Value) any {
-	b.mu.Lock()
-	srv := b.srv
-	ln := b.listener
-	b.srv = nil
-	b.listener = nil
-	b.running = false
-	b.mu.Unlock()
-	if ln != nil {
-		ln.Close()
-	}
-	if srv != nil {
-		if err := srv.Close(); err != nil {
-			return err.Error()
+	return promise(func(resolve, reject js.Value) {
+		b.mu.Lock()
+		srv := b.srv
+		ln := b.listener
+		streamLn := b.streamListener
+		b.srv = nil
+		b.listener = nil
+		b.streamListener = nil
+		b.running = false
+		b.mu.Unlock()
+		var first string
+		for _, target := range []net.Listener{streamLn, ln} {
+			if target == nil {
+				continue
+			}
+			if err := target.Close(); err != nil && first == "" {
+				first = err.Error()
+			}
 		}
-	}
-	return nil
+		if srv != nil {
+			if err := srv.Close(); err != nil && first == "" {
+				first = err.Error()
+			}
+		}
+		if first != "" {
+			resolve.Invoke(js.ValueOf(first))
+			return
+		}
+		resolve.Invoke(js.Null())
+	})
 }

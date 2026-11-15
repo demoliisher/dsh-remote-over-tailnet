@@ -28,6 +28,8 @@ export interface TailnetView {
   authUrl?: string
   account?: string
   logPath?: string
+  /** SSH 模式：tailnet 上的监听端口与主机密钥指纹；未启用时不存在。 */
+  ssh?: { port: number; fingerprint: string; webPort: number }
   steps: {
     node: TailnetStepView
     relay: TailnetStepView
@@ -105,6 +107,7 @@ export interface PluginSettings {
   sidebar?: { entry?: SidebarEntryStyle }
   service?: { enabled?: boolean }
   tailnet?: { enabled?: boolean; dataDirectory?: string; authKey?: string }
+  ssh?: { enabled?: boolean; port?: number }
 }
 
 export interface PluginSettingsView {

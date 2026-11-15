@@ -113,6 +113,8 @@ export class PluginControlRuntime {
       }
       if (endpoint === 'tailnet.status') return ok(this.tailnet?.snapshot() ?? null)
       if (endpoint === 'tailnet.credentials') return ok(this.credentials())
+      if (endpoint === 'tailnet.ssh.credentials') return ok(this.sshCredentials())
+      if (endpoint === 'ssh.set') return this.withTailnet(ok(await this.setSsh(payload)))
       if (endpoint === 'tailnet.credentials.save') return ok(await this.saveCredentials(payload))
       if (endpoint === 'status') {
         if (this.startupFailure !== undefined) {
@@ -137,6 +139,13 @@ export class PluginControlRuntime {
     return credentials
   }
 
+  private sshCredentials(): { username: string; password: string; port: number; token?: string } {
+    if (this.tailnet === undefined) throw new ControlError('METHOD_NOT_ALLOWED', '内嵌节点未启用。')
+    const credentials = this.tailnet.sshCredentials()
+    if (credentials === undefined) throw new ControlError('CREDENTIALS_UNAVAILABLE', 'SSH 模式尚未就绪，请等待内嵌节点启动完成。')
+    return credentials
+  }
+
   /**
    * 「远程服务」总开关：打开时先启动内嵌节点与本地中继，节点仍在等 Tailscale 授权时
    * 只打开开关、由编排在就绪回调里完成 Host 授权与连接；关闭时先断开 Host 连接，再停止中继与节点。
@@ -147,7 +156,7 @@ export class PluginControlRuntime {
     await this.persistService(value.enabled)
     if (!value.enabled) {
       await this.host?.setHostControl(false)
-      await this.tailnet?.stop()
+      await this.tailnet?.applyService(false)
       return this.hostOnlyStatus()
     }
     if (this.host === undefined) throw new ControlError('METHOD_NOT_ALLOWED', '插件当前没有运行 Host。')
@@ -155,7 +164,7 @@ export class PluginControlRuntime {
       await this.host.setHostControl(true)
       return this.hostOnlyStatus()
     }
-    await this.tailnet.start()
+    await this.tailnet.applyService(true)
     const snapshot = this.tailnet.snapshot()
     if (snapshot?.phase === 'error') {
       throw new ControlError('REMOTE_SERVICE_UNAVAILABLE', snapshot.error?.message ?? '远程服务启动失败。')
@@ -167,6 +176,23 @@ export class PluginControlRuntime {
       return this.hostOnlyStatus()
     }
     await this.host.setHostControl(true)
+    return this.hostOnlyStatus()
+  }
+
+  /** 面板上开关 SSH 模式或改端口；写入配置后由编排就地生效。 */
+  private async setSsh(payload: unknown): Promise<Record<string, unknown>> {
+    if (this.settings === undefined) throw new ControlError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
+    const value = record(payload)
+    if (typeof value.enabled !== 'boolean') throw new ControlError('INVALID_MESSAGE', '需要提供 SSH 模式的开关状态。')
+    const current = resolveConfig(this.settings.get())
+    const port = value.port === undefined ? current.ssh.port : value.port
+    if (typeof port !== 'number' || !Number.isInteger(port) || port < 1024 || port > 65535) {
+      throw new ControlError('INVALID_MESSAGE', 'SSH 端口需为 1024 到 65535 之间的整数。')
+    }
+    const next = resolveConfig({ ...editableConfig(current), ssh: { enabled: value.enabled, port } })
+    await this.settings.replace(editableConfig(next))
+    this.config = next
+    await this.tailnet?.applySsh(next.ssh)
     return this.hostOnlyStatus()
   }
 
@@ -295,6 +321,7 @@ function editableConfig(config: ResolvedConfig): Config {
       ...(config.tailnet.dataDirectory === undefined ? {} : { dataDirectory: config.tailnet.dataDirectory }),
       ...(config.tailnet.authKey === undefined ? {} : { authKey: config.tailnet.authKey }),
     },
+    ssh: config.ssh,
     forceRelay: config.forceRelay,
     logLevel: config.logLevel,
     reconnect: config.reconnect.enabled

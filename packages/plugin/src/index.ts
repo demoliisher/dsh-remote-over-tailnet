@@ -287,6 +287,14 @@ async function activate(
       defaultDataDirectory: () => join(defaultIdentityDirectory, 'tailnet'),
       packageRoot: PACKAGE_ROOT,
       pluginVersion: PLUGIN_VERSION,
+      webPort: () => (ctx.get('webServer') as DshWebServerPortLike | undefined)?.port,
+      webToken: () => {
+        // DSH Go 的「只连接」要填既有实例启动链接里的 token；插件进程拿得到这条链接，直接展示给用户。
+        const connection = ctx.get('connection') as PluginRouteConnectionLike | undefined
+        const port = (ctx.get('webServer') as DshWebServerPortLike | undefined)?.port
+        if (connection?.authenticatedUrl === undefined || port === undefined) return undefined
+        return new URL(connection.authenticatedUrl(`http://127.0.0.1:${port}/`)).searchParams.get('token') ?? undefined
+      },
       onReady: async () => {
         const host = currentRuntime()
         const node = currentTailnet()
@@ -325,7 +333,7 @@ async function activate(
       logger.error('Remote plugin startup failed', safeStartupError(initialStorageError))
     } else {
       try {
-        if (config.service.enabled === false) {
+        if (config.service.enabled === false && config.ssh.enabled === false) {
           await runtime!.start()
           await tailnet?.stop()
         } else {

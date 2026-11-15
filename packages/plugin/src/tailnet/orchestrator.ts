@@ -5,6 +5,7 @@ import { loadOrCreateRelayCredentials, saveRelayCredentials, type RelayCredentia
 import type { TsnetNode, TsnetNodeStatus } from './embedded-node.js'
 import { connectEmbeddedNode } from './embedded-node.js'
 import { RelayError, relayLogPath, startRelay, type RelayHandle } from './relay.js'
+import { startSshServer, type SshServerHandle } from './ssh-server.js'
 
 /** 节点在 tailnet 里的固定名称，对外地址形如 http://dsh-remote.<tailnet>.ts.net。 */
 export const TAILNET_NODE_HOSTNAME = 'dsh-remote'
@@ -55,6 +56,8 @@ export interface TailnetSnapshot {
   account?: string
   logPath?: string
   steps: TailnetSteps
+  /** SSH 模式：tailnet 上的监听端口、主机密钥指纹与转发目标端口；未启用时不存在。 */
+  ssh?: { port: number; fingerprint: string; webPort: number }
   error?: TailnetErrorInfo
   updatedAt: string
 }
@@ -65,6 +68,12 @@ export interface TailnetControl {
   credentials(): RelayCredentials | undefined
   /** 远程服务停止时保存中继账号密码，供下次启动使用。 */
   saveCredentials(credentials: RelayCredentials): Promise<TailnetSnapshot | undefined>
+  /** SSH 模式的登录信息；未启用或尚未就绪时为空。 */
+  sshCredentials(): { username: string; password: string; port: number; token?: string } | undefined
+  /** 运行中修改 SSH 模式的开关与端口，不重启节点；失败抛出由控制层回报。 */
+  applySsh(ssh: ResolvedConfig['ssh']): Promise<TailnetSnapshot | undefined>
+  /** 运行中修改「远程服务」开关：只起停中继，节点留给 SSH 模式继续用。 */
+  applyService(enabled: boolean): Promise<TailnetSnapshot | undefined>
   /** 启动内嵌节点与本地中继；失败写入快照，不抛出。 */
   start(): Promise<void>
   /** 停止中继并关闭节点，快照转为已停止。 */
@@ -86,6 +95,10 @@ export interface TailnetOrchestratorOptions {
   packageRoot: string
   /** 本插件版本，用于校验中继产物。 */
   pluginVersion: string
+  /** 当前 DSH Web 端口；SSH 只允许把隧道通到这个端口。 */
+  webPort: () => number | undefined
+  /** 当前 DSH Web 登录令牌，DSH Go 的「只连接」要填它；取不到时面板留空。 */
+  webToken?: () => string | undefined
   /** 节点就绪、可以授权 Host 时回调；授权结果由回调自己写回快照。 */
   onReady?: () => void | Promise<void>
 }
@@ -125,6 +138,8 @@ export class TailnetOrchestrator implements TailnetControl {
   private relay?: RelayHandle
   private node?: TsnetNode
   private listeningPort?: number
+  private ssh?: SshServerHandle
+  private sshPort?: number
   private advanceTimer?: NodeJS.Timeout
   private disposed = false
 
@@ -137,6 +152,47 @@ export class TailnetOrchestrator implements TailnetControl {
 
   credentials(): RelayCredentials | undefined {
     return this.relayCredentials === undefined ? undefined : { ...this.relayCredentials }
+  }
+
+  sshCredentials(): { username: string; password: string; port: number; token?: string } | undefined {
+    const ssh = this.ssh
+    const port = this.state?.ssh?.port
+    const credentials = this.relayCredentials
+    if (ssh === undefined || port === undefined || credentials === undefined) return undefined
+    return { username: credentials.account, password: credentials.password, port, token: this.options.webToken?.() }
+  }
+
+  /**
+   * 面板改 SSH 开关或端口时就地生效。
+   *
+   * 节点与中继不动，只关掉或换掉 SSH 监听；端口变化时先关旧监听再按新端口监听。
+   * 主机密钥与账号密码都与 DSH Remote 共用，客户端已信任的指纹不会失效。
+   */
+  async applySsh(ssh: ResolvedConfig['ssh']): Promise<TailnetSnapshot | undefined> {
+    const current = this.options.config.ssh
+    if (current.enabled === ssh.enabled && current.port === ssh.port) return this.snapshot()
+    this.options.config = { ...this.options.config, ssh }
+    if (!ssh.enabled) {
+      await this.stopSsh()
+      if (this.wantsRelay()) {
+        if (this.state !== undefined) {
+          this.state.phase = 'ready'
+          this.publish()
+        }
+        return this.snapshot()
+      }
+      await this.stop()
+      this.markStopped('远程服务与 SSH 都已关闭。')
+      return this.snapshot()
+    }
+    // 只开 SSH 时节点本来没跑：把节点拉起来；中继这一半看「远程服务」开关。
+    if (this.node === undefined) {
+      await this.start()
+      return this.snapshot()
+    }
+    if (this.sshPort !== undefined && this.sshPort !== ssh.port) await this.closeSshStream()
+    if (this.state?.phase === 'ready') await this.startSsh()
+    return this.snapshot()
   }
 
   /** 中继已就绪且节点已在 tailnet 端口监听。 */
@@ -166,16 +222,19 @@ export class TailnetOrchestrator implements TailnetControl {
   }
 
   /**
-   * 远程服务停止时保存中继账号密码，供下次启动使用。
+   * 保存 DSH Remote 与 SSH 共用的账号密码。
    *
-   * 此时中继没有运行，无法立即验证新凭据；下次 start() 启动中继时由 relay 的登录检查完成验证。
+   * 中继运行时锁住旧凭据，改动要等下次启动才生效；只开着 SSH 时可以随时改，
+   * SSH 认证每次取现值，改完立即使用新账号与密码。
    */
   async saveCredentials(next: RelayCredentials): Promise<TailnetSnapshot | undefined> {
     const { config, logger } = this.options
     if (!config.tailnet.enabled || tailnetRelayPort(config.serverUrl) === undefined) {
       throw new TailnetOrchestrationError('TAILNET_NOT_APPLICABLE', '当前服务器地址不使用内置中继，没有可保存的中继账号密码。')
     }
-    if (this.relay !== undefined || this.state?.enabled === true) {
+    // 中继运行时会锁住旧凭据，改写入下次启动才能生效；只开着 SSH 时可以直接改，
+    // SSH 认证每次取现值，立即使用新账号与密码。
+    if (this.relay !== undefined) {
       throw new TailnetOrchestrationError('TAILNET_RUNNING', '请先停止远程服务，再修改账号密码。')
     }
     const saved = await saveRelayCredentials(this.dataDirectory(), next)
@@ -193,13 +252,23 @@ export class TailnetOrchestrator implements TailnetControl {
     const { config, logger } = this.options
     this.disposed = false
     const relayPort = tailnetRelayPort(config.serverUrl)
-    this.state = this.initialSnapshot(relayPort)
+    if (this.state === undefined) this.state = this.initialSnapshot(relayPort)
     if (!config.tailnet.enabled) {
       this.disabled('已在设置中关闭内嵌节点，未启动本地中继。')
       return
     }
     if (config.serverUrl === undefined || relayPort === undefined) {
       this.disabled('服务器地址不是 http://127.0.0.1:<端口> 这样的本机地址，按外部服务器处理，未启动内置中继。')
+      return
+    }
+    if (!this.wantsNode()) {
+      await this.stop()
+      this.markStopped('远程服务与 SSH 都已关闭。')
+      return
+    }
+    // 节点是两套服务共用的底座：只切中继开关时不重建节点，直接补齐中继这一半。
+    if (this.node !== undefined) {
+      await this.completeSetup(relayPort)
       return
     }
     this.state.phase = 'probing'
@@ -278,62 +347,203 @@ export class TailnetOrchestrator implements TailnetControl {
     return this.state.phase
   }
 
-  /** 节点入网后起中继并在 tailnet 端口监听，最后回调上层完成 Host 授权。 */
+  /** 节点入网后按需补齐中继与 SSH 两套服务，中继这一套最后回调上层完成 Host 授权。 */
   private async completeSetup(relayPort: number): Promise<void> {
     const { logger } = this.options
     if (this.state === undefined) return
     try {
-      const credentials = this.relayCredentials
-      if (credentials === undefined) {
-        throw new TailnetOrchestrationError('TAILNET_NO_CREDENTIALS', '尚未生成中继账号密码，无法启动本地中继。')
+      if (this.wantsRelay()) await this.startRelay(relayPort)
+      else this.clearRelaySteps('远程服务已关闭')
+      await this.startSsh()
+      if (this.wantsRelay()) {
+        this.state.steps.authorize = { ok: null, detail: '等待 Host 设备授权' }
       }
-      const publicUrl = this.state.publicUrl
-      if (publicUrl === undefined) {
-        throw new TailnetOrchestrationError('TAILNET_NO_DNS_NAME', '内嵌节点已运行，但没有拿到设备域名。请检查 MagicDNS 设置。', 'https://login.tailscale.com/admin/dns')
-      }
-      if (this.relay === undefined) {
-        this.state.steps.relay = { ok: null, detail: '正在启动本地中继' }
-        this.publish()
-        this.relay = await startRelay({
-          serverRoot: join(this.options.packageRoot, 'server'),
-          pluginVersion: this.options.pluginVersion,
-          dataDirectory: this.dataDirectory(),
-          port: relayPort,
-          publicUrl,
-          account: credentials.account,
-          password: credentials.password,
-          logger,
-          onExit: info => this.onRelayExit(info),
-        })
-        this.state.relayPid = this.relay.pid
-        this.state.logPath = relayLogPath(this.dataDirectory())
-        this.state.steps.relay = { ok: true, detail: '中继运行在 127.0.0.1:' + String(relayPort) }
-        this.publish()
-      }
-      const node = this.node
-      if (node === undefined) {
-        throw new TailnetOrchestrationError('TAILNET_NODE_STOPPED', '内嵌节点已停止，无法监听 tailnet 端口。')
-      }
-      if (this.listeningPort !== relayPort) {
-        this.state.steps.listen = { ok: null, detail: '正在 tailnet 端口 ' + String(TAILNET_LISTEN_PORT) + ' 监听' }
-        this.publish()
-        await node.listen(TAILNET_LISTEN_PORT, relayPort)
-        this.listeningPort = relayPort
-      }
-      await this.waitForRelay(publicUrl + '/health')
-      this.state.steps.listen = {
-        ok: true,
-        detail: '已在 ' + publicUrl + '（端口 ' + String(TAILNET_LISTEN_PORT) + '）监听并转发到 127.0.0.1:' + String(relayPort),
-      }
-      this.state.steps.authorize = { ok: null, detail: '等待 Host 设备授权' }
       this.state.phase = 'ready'
       this.state.error = undefined
       this.publish()
-      logger.info('tailnet node ready', { publicUrl, relayPort })
+      if (!this.wantsRelay()) {
+        logger.info('tailnet node ready for ssh only', { dnsName: this.state.dnsName ?? '' })
+        return
+      }
+      logger.info('tailnet node ready', { publicUrl: this.state.publicUrl ?? '', relayPort })
       await this.options.onReady?.()
     } catch (error) {
       this.fail(error)
     }
+  }
+
+  /** 起本地中继，并在 tailnet 的 80 端口监听转发；只在「远程服务」开着时执行。 */
+  private async startRelay(relayPort: number): Promise<void> {
+    const { logger } = this.options
+    if (this.state === undefined) return
+    const credentials = this.relayCredentials
+    if (credentials === undefined) {
+      throw new TailnetOrchestrationError('TAILNET_NO_CREDENTIALS', '尚未生成中继账号密码，无法启动本地中继。')
+    }
+    const publicUrl = this.state.publicUrl
+    if (publicUrl === undefined) {
+      throw new TailnetOrchestrationError('TAILNET_NO_DNS_NAME', '内嵌节点已运行，但没有拿到设备域名。请检查 MagicDNS 设置。', 'https://login.tailscale.com/admin/dns')
+    }
+    if (this.relay === undefined) {
+      this.state.steps.relay = { ok: null, detail: '正在启动本地中继' }
+      this.publish()
+      this.relay = await startRelay({
+        serverRoot: join(this.options.packageRoot, 'server'),
+        pluginVersion: this.options.pluginVersion,
+        dataDirectory: this.dataDirectory(),
+        port: relayPort,
+        publicUrl,
+        account: credentials.account,
+        password: credentials.password,
+        logger,
+        onExit: info => this.onRelayExit(info),
+      })
+      this.state.relayPid = this.relay.pid
+      this.state.logPath = relayLogPath(this.dataDirectory())
+      this.state.steps.relay = { ok: true, detail: '中继运行在 127.0.0.1:' + String(relayPort) }
+      this.publish()
+    }
+    const node = this.node
+    if (node === undefined) {
+      throw new TailnetOrchestrationError('TAILNET_NODE_STOPPED', '内嵌节点已停止，无法监听 tailnet 端口。')
+    }
+    if (this.listeningPort !== relayPort) {
+      this.state.steps.listen = { ok: null, detail: '正在 tailnet 端口 ' + String(TAILNET_LISTEN_PORT) + ' 监听' }
+      this.publish()
+      await node.listen(TAILNET_LISTEN_PORT, relayPort)
+      this.listeningPort = relayPort
+    }
+    await this.waitForRelay(publicUrl + '/health')
+    this.state.steps.listen = {
+      ok: true,
+      detail: '已在 ' + publicUrl + '（端口 ' + String(TAILNET_LISTEN_PORT) + '）监听并转发到 127.0.0.1:' + String(relayPort),
+    }
+  }
+
+  /**
+   * 只关掉中继这一套：停中继进程并关掉节点上的 80 端口监听，节点与 SSH 保持运行。
+   *
+   * 「远程服务」和「SSH 接入」是两个独立模块，关掉一个不影响另一个用同一个节点。
+   */
+  private async stopRelay(): Promise<void> {
+    const relay = this.relay
+    this.relay = undefined
+    this.listeningPort = undefined
+    if (this.state !== undefined) {
+      this.state.relayPid = undefined
+      this.state.steps.relay = { ok: null, detail: '未运行' }
+      this.state.steps.listen = { ok: null, detail: '未监听' }
+      this.state.steps.authorize = { ok: null, detail: '不需要' }
+      this.publish()
+    }
+    if (this.node !== undefined) await this.node.closeListener()
+    if (relay !== undefined) await relay.stop()
+  }
+
+  /** 中继关掉时把相关步骤写成未运行，面板不显示残留的旧地址与旧进度。 */
+  private clearRelaySteps(detail: string): void {
+    if (this.state === undefined) return
+    this.state.relayPid = undefined
+    this.state.steps.relay = { ok: null, detail }
+    this.state.steps.listen = { ok: null, detail: '未监听' }
+    this.state.steps.authorize = { ok: null, detail: '不需要' }
+    this.publish()
+  }
+
+  /** 远程服务（中继）是否应该在运行。 */
+  private wantsRelay(): boolean {
+    return this.options.config.service.enabled !== false
+  }
+
+  /** SSH 接入是否应该在运行。 */
+  private wantsSsh(): boolean {
+    return this.options.config.ssh.enabled
+  }
+
+  /** 只要有一边开着，节点就得在。 */
+  private wantsNode(): boolean {
+    return this.wantsRelay() || this.wantsSsh()
+  }
+
+  /**
+   * 面板改「远程服务」开关时就地生效。
+   *
+   * 打开时补齐节点与中继；关闭时只停中继，SSH 还开着就保留节点，两边都关才整体停止。
+   */
+  async applyService(enabled: boolean): Promise<TailnetSnapshot | undefined> {
+    if (this.options.config.service.enabled !== enabled) {
+      this.options.config = { ...this.options.config, service: { enabled } }
+    }
+    if (enabled) {
+      await this.start()
+      return this.snapshot()
+    }
+    await this.stopRelay()
+    if (this.wantsSsh()) {
+      if (this.state !== undefined) {
+        this.state.phase = 'ready'
+        this.state.error = undefined
+        this.publish()
+      }
+      return this.snapshot()
+    }
+    await this.stop()
+    this.markStopped('远程服务与 SSH 都已关闭。')
+    return this.snapshot()
+  }
+
+  /**
+   * 起 SSH 服务，并在 tailnet 上单独监听一个端口。
+   *
+   * 端口上的每条连接都交给 ssh2 处理，认证通过后只允许 direct-tcpip 到当前 DSH Web 端口，
+   * 因此这条通道能做的只有「替客户端打通到本机这个实例」。
+   */
+  private async startSsh(): Promise<void> {
+    const { config, logger } = this.options
+    if (this.state === undefined) return
+    if (!config.ssh.enabled) return
+    const node = this.node
+    if (node === undefined) {
+      throw new TailnetOrchestrationError('TAILNET_NODE_STOPPED', '内嵌节点已停止，无法监听 SSH 端口。')
+    }
+    if (this.options.webPort() === undefined) {
+      throw new TailnetOrchestrationError('TAILNET_NO_WEB_PORT', '取不到当前 DSH Web 端口，SSH 模式无法确定转发目标。')
+    }
+    this.ssh ??= await startSshServer({
+      directory: join(this.dataDirectory(), 'ssh'),
+      account: () => this.relayCredentials?.account ?? '',
+      password: () => this.relayCredentials?.password ?? '',
+      targetPort: () => this.options.webPort(),
+      logger,
+    })
+    const handle = this.ssh
+    if (this.sshPort !== config.ssh.port) {
+      await node.listenStream(config.ssh.port, socket => handle.handleConnection(socket))
+      this.sshPort = config.ssh.port
+    }
+    const webPort = this.options.webPort()
+    if (webPort === undefined) throw new TailnetOrchestrationError('TAILNET_NO_WEB_PORT', '取不到当前 DSH Web 端口，SSH 模式无法确定转发目标。')
+    this.state.ssh = { port: config.ssh.port, fingerprint: handle.fingerprint, webPort }
+    this.publish()
+  }
+
+  /** 只关掉 tailnet 上的 SSH 监听，SSH 服务与凭据保留。 */
+  private async closeSshStream(): Promise<void> {
+    const node = this.node
+    this.sshPort = undefined
+    if (this.state !== undefined) this.state.ssh = undefined
+    this.publish()
+    if (node !== undefined) await node.closeStream()
+  }
+
+  /** 关闭监听与 SSH 服务；面板关掉 SSH 模式时调用。 */
+  private async stopSsh(): Promise<void> {
+    const ssh = this.ssh
+    this.ssh = undefined
+    if (this.state !== undefined) this.state.ssh = undefined
+    this.publish()
+    await this.closeSshStream()
+    if (ssh !== undefined) await ssh.close()
   }
 
   /** 经节点自己访问中继健康检查，确认 tailnet 入站链路已经通到本机中继。 */
@@ -378,6 +588,10 @@ export class TailnetOrchestrator implements TailnetControl {
     const relay = this.relay
     this.relay = undefined
     if (relay !== undefined) await relay.stop()
+    const ssh = this.ssh
+    this.ssh = undefined
+    this.sshPort = undefined
+    if (ssh !== undefined) await ssh.close()
     const node = this.node
     this.node = undefined
     this.listeningPort = undefined
@@ -394,6 +608,7 @@ export class TailnetOrchestrator implements TailnetControl {
       phase: 'disabled',
       relayPid: undefined,
       authUrl: undefined,
+      ssh: undefined,
       error: undefined,
       steps: {
         node: { ok: null, detail: '未运行' },

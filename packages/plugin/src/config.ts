@@ -26,6 +26,15 @@ export interface Config {
     /** 预先在管理台申请好的节点授权密钥；留空时首次启动给出授权链接。 */
     authKey?: string
   }
+  /**
+   * 在 tailnet 节点上额外暴露一个 SSH 端口，供 DSH Go 之类的客户端以「只连接」模式接入。
+   * 只放行到当前 DSH Web 端口的转发，不提供远端 shell。
+   */
+  ssh?: {
+    enabled?: boolean
+    /** tailnet 上的监听端口，与中继的 80 端口分开。 */
+    port?: number
+  }
   forceRelay?: boolean
   /**
    * When a known peer device presents a NEW identity key after re-authorizing with the
@@ -74,6 +83,7 @@ export interface ResolvedCodexConfig {
     dataDirectory?: string
     authKey?: string
   }
+  ssh: { enabled: boolean; port: number }
   codex: ResolvedCodexConfig
 }
 
@@ -100,6 +110,7 @@ export const entryConfigSchema = s.object({
   service: s.object({ enabled: s.boolean() }),
   loopback: s.object({ ports: s.array(s.number()) }),
   tailnet: s.object({ enabled: s.boolean(), dataDirectory: s.string(), authKey: s.string() }),
+  ssh: s.object({ enabled: s.boolean(), port: s.number() }),
   forceRelay: s.boolean(),
   rotatePinnedPeerKey: s.boolean(),
   logLevel: s.union(['debug', 'info', 'warn', 'error'] as const),
@@ -154,6 +165,10 @@ const configSchema = z.object({
     dataDirectory: z.string().trim().min(1).max(4096).optional(),
     authKey: z.string().trim().min(1).max(512).optional(),
   }).strict().optional(),
+  ssh: z.object({
+    enabled: z.boolean().optional(),
+    port: z.number().int().min(1024).max(65535).optional(),
+  }).strict().optional(),
   forceRelay: z.boolean().optional(),
   rotatePinnedPeerKey: z.boolean().optional(),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).optional(),
@@ -186,6 +201,10 @@ export function resolveConfig(input: ConfigInput = {}, env: NodeJS.ProcessEnv = 
       enabled: parsed.tailnet?.enabled ?? true,
       ...(parsed.tailnet?.dataDirectory === undefined ? {} : { dataDirectory: parsed.tailnet.dataDirectory }),
       ...(parsed.tailnet?.authKey === undefined ? {} : { authKey: parsed.tailnet.authKey }),
+    },
+    ssh: {
+      enabled: parsed.ssh?.enabled ?? false,
+      port: parsed.ssh?.port ?? 2222,
     },
     forceRelay: parsed.forceRelay ?? false,
     rotatePinnedPeerKey: parsed.rotatePinnedPeerKey ?? false,
