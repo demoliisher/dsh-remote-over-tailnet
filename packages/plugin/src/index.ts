@@ -52,9 +52,11 @@ export { Config }
 // The unscoped dsh-remote package belongs to another publisher. A bare name
 // cannot establish ownership of a legacy local alias, so leave it unchanged.
 const legacyLoaderModuleNames = new Set(['@dsh-remote/plugin'])
+/** 上游插件的模块名；它同样提供 `dshRemote` 服务，本插件在它面前让位。 */
+const UPSTREAM_MODULE_NAME = 'ds-harness-remote'
 // Settings-registry generation (≤0.1.6). The branded `SettingsNamespace` type
 // was removed with the registry in rc.1, so the literals stay plain strings.
-const pluginSettingsNamespace = 'ds-harness-remote'
+const pluginSettingsNamespace = 'dsh-remote-over-tailnet'
 
 /** Fallback entry id when the Loader cannot locate this plugin's entry. */
 const DEFAULT_ENTRY_ID = 'dsh-remote-over-tailnet'
@@ -300,14 +302,20 @@ async function activate(
   if (initialStorageError !== undefined) controlRuntime?.setStartupFailure(initialStorageError)
 
   if (runtime !== undefined) {
-    try {
-      ctx.provide('dshRemote', runtime)
-      hostServiceProvided = true
-    } catch {
-      logger.warn('failed to provide remote service', {
-        service: 'dshRemote',
-        code: 'SERVICE_PROVIDE_CONFLICT',
-      })
+    const owner = sharedRemoteServiceOwner(ctx)
+    if (owner === undefined) {
+      try {
+        ctx.provide('dshRemote', runtime)
+        hostServiceProvided = true
+      } catch {
+        logger.warn('failed to provide remote service', {
+          service: 'dshRemote',
+          code: 'SERVICE_PROVIDE_CONFLICT',
+        })
+      }
+    } else {
+      // 服务名是对外公共约定，本插件主动让位；面板与客户端仍走自己的控制接口。
+      logger.info('left the shared dshRemote service to its owner', { owner })
     }
   }
   await disableLegacyLoaderEntries(ctx, logger)
@@ -462,6 +470,24 @@ async function createSettingsBinding(
 function isLegacySettingsProvider(value: unknown): value is LegacySettingsProviderLike {
   return typeof value === 'object' && value !== null
     && typeof (value as { register?: unknown }).register === 'function'
+}
+
+/**
+ * 谁已经占用了 `dshRemote` 这个公共服务名。
+ *
+ * 上游 ds-harness-remote 提供同一个服务；两边都争只会让后加载的一方报冲突，
+ * 本插件因此让位，其余功能照旧走自己的控制接口。
+ *
+ * @returns `provided` 表示服务已被注册，`installed` 表示上游插件在场且启用，无人占用时返回 undefined。
+ */
+function sharedRemoteServiceOwner(ctx: Context): 'provided' | 'installed' | undefined {
+  if (ctx.get('dshRemote') !== undefined) return 'provided'
+  const loader = ctx.get('loader') as LoaderLike | undefined
+  if (!isLoaderLike(loader)) return undefined
+  for (const entry of loader.entries()) {
+    if (entry.options.name === UPSTREAM_MODULE_NAME && entry.options.disabled !== true) return 'installed'
+  }
+  return undefined
 }
 
 async function disableLegacyLoaderEntries(ctx: Context, logger: SafeLogger): Promise<void> {

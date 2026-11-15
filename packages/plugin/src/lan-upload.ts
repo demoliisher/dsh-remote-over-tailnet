@@ -71,6 +71,7 @@ export class LanUploadHost {
       const address = server.address()
       if (!address || typeof address === 'string') throw unavailable()
       const token = randomBytes(32).toString('base64url')
+      // 路径属于协议约定：客户端按上游正则校验，不能跟着本插件的控制前缀改名。
       const path = `/ds-harness-remote/upload/${token}`
       const offer: LanUploadOffer = { sessionId:p.sessionId, uploadId:p.uploadId, connectionId:this.owner.connectionId,
         url:`ws://${p.address}:${address.port}${path}`, expiresInMs:LAN_UPLOAD_TICKET_MS }

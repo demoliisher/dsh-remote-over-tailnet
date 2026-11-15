@@ -6,7 +6,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as remotePlugin from '../src/index.js'
 import { resolveConfig, type Config } from '../src/config.js'
-import type { ControlRouteHandler } from '../src/control-route.js'
+import { CONTROL_RPC_PREFIX, type ControlRouteHandler } from '../src/control-route.js'
 
 const directories: string[] = []
 const disabledAgentDomains = { codex: { enabled: false } }
@@ -81,7 +81,7 @@ describe('Cordis plugin lifecycle', () => {
     try {
       await vi.waitFor(() => { expect(ctx.get('dshRemote')).toBeDefined() })
       expect(register).toHaveBeenCalledOnce()
-      expect(register.mock.calls[0]?.[0]).toBe('ds-harness-remote')
+      expect(register.mock.calls[0]?.[0]).toBe('dsh-remote-over-tailnet')
       expect(resolvedFromSchema).toMatchObject({
         serverUrl: 'https://legacy.example.com',
         loopback: { ports: [8080] },
@@ -231,7 +231,7 @@ describe('Cordis plugin lifecycle', () => {
     await vi.waitFor(() => {
       expect(ctx.dshRemote.currentIdentity()).toMatchObject({ name: 'Cordis delayed connection host' })
     })
-    expect(fixture.handle).toHaveBeenCalledWith('/ds-harness-remote', expect.any(Function), {
+    expect(fixture.handle).toHaveBeenCalledWith(CONTROL_RPC_PREFIX, expect.any(Function), {
       authority: 'loopback',
     })
 
@@ -265,7 +265,7 @@ describe('Cordis plugin lifecycle', () => {
 
     expect(ctx.get('dshRemote')).toBeUndefined()
     await vi.waitFor(() => expect(handlers).toHaveLength(1))
-    expect(handlers[0]?.channel).toBe('/ds-harness-remote')
+    expect(handlers[0]?.channel).toBe(CONTROL_RPC_PREFIX)
     await expect(handlers[0]?.handler('status', {}, new AbortController().signal)).resolves.toEqual({
       ok: true,
       value: { deviceName: expect.any(String), serviceAvailable: false },
@@ -355,6 +355,59 @@ describe('Cordis plugin lifecycle', () => {
       await fiber.dispose()
       await ctx.fiber.dispose()
     }
+  })
+
+  it('leaves the shared dshRemote service to an installed upstream plugin', async () => {
+    const dshHome = await temporaryDirectory('dsh-remote-upstream-owner-')
+    vi.stubEnv('DSH_HOME', dshHome)
+    const entries = [
+      { id: 'current', options: { id: 'current', name: 'dsh-remote-over-tailnet', disabled: false } },
+      { id: 'upstream', options: { id: 'upstream', name: 'ds-harness-remote', disabled: false } },
+    ]
+    const ctx = new Context()
+    ctx.provide('loader', { locate: () => 'current', entries: () => entries, update: vi.fn(async () => undefined) } as never)
+    ctx.provide('settings', settings())
+    ctx.provide('typertGateway', typertGateway())
+    const fixture = connection()
+    ctx.provide('connection', fixture.service)
+    const fiber = await ctx.plugin(remotePlugin, { ...disabledAgentDomains, deviceName: 'Cordis upstream owner host' })
+    const call = (endpoint: string, payload: unknown = {}) => fixture.handler!(endpoint, payload, new AbortController().signal)
+    try {
+      await vi.waitFor(() => expect(fixture.handler).toBeDefined())
+      expect(ctx.get('dshRemote')).toBeUndefined()
+      await expect(call('status')).resolves.toMatchObject({ ok: true, value: { serviceAvailable: true } })
+    } finally {
+      await fiber.dispose()
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('keeps its own dshRemote registration when the upstream entry is disabled', async () => {
+    const dshHome = await temporaryDirectory('dsh-remote-upstream-disabled-')
+    vi.stubEnv('DSH_HOME', dshHome)
+    const entries = [
+      { id: 'current', options: { id: 'current', name: 'dsh-remote-over-tailnet', disabled: false } },
+      { id: 'upstream', options: { id: 'upstream', name: 'ds-harness-remote', disabled: true } },
+    ]
+    const ctx = new Context()
+    ctx.provide('loader', { locate: () => 'current', entries: () => entries, update: vi.fn(async () => undefined) } as never)
+    ctx.provide('settings', settings())
+    ctx.provide('typertGateway', typertGateway())
+    ctx.provide('connection', connection().service)
+    const fiber = await ctx.plugin(remotePlugin, { ...disabledAgentDomains, deviceName: 'Cordis upstream disabled host' })
+    try {
+      await vi.waitFor(() => expect(ctx.dshRemote.currentIdentity()).toBeDefined())
+    } finally {
+      await fiber.dispose()
+      expect(ctx.get('dshRemote')).toBeUndefined()
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('serves the control plane on a prefix the upstream plugin does not claim', async () => {
+    // 上游 ds-harness-remote 注册 /ds-harness-remote，同前缀会让后加载的一方注册失败。
+    expect(CONTROL_RPC_PREFIX).not.toBe('/ds-harness-remote')
+    expect(CONTROL_RPC_PREFIX.startsWith('/')).toBe(true)
   })
 
   it('keeps the control plane available when the plugin is disabled in the config', async () => {

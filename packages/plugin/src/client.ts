@@ -21,7 +21,7 @@ declare global {
     __ModuleLoader__: {
       load(input: { id: string; factory: (require: (id: string) => unknown) => unknown }): void
     }
-    __DS_HARNESS_REMOTE_CLIENT_ACTIVE__?: boolean
+    __DSH_REMOTE_OVER_TAILNET_CLIENT_ACTIVE__?: boolean
   }
 }
 
@@ -82,9 +82,10 @@ window.__ModuleLoader__.load({
         register(options: Record<string, unknown>, component: unknown): unknown
       }
     }): void {
-      if (window.__DS_HARNESS_REMOTE_CLIENT_ACTIVE__) return
-      window.__DS_HARNESS_REMOTE_CLIENT_ACTIVE__ = true
-      ctx.effect(() => () => { window.__DS_HARNESS_REMOTE_CLIENT_ACTIVE__ = false }, 'ds-harness-remote: client singleton')
+      // 上游插件用同名全局标志做单例保护；各用各的，两者才能同时挂载 UI。
+      if (window.__DSH_REMOTE_OVER_TAILNET_CLIENT_ACTIVE__) return
+      window.__DSH_REMOTE_OVER_TAILNET_CLIENT_ACTIVE__ = true
+      ctx.effect(() => () => { window.__DSH_REMOTE_OVER_TAILNET_CLIENT_ACTIVE__ = false }, 'dsh-remote-over-tailnet: client singleton')
 
       const t = ctx.locale.bind(localeNamespace)
       // Entry style shared by the settings page and the sidebar entry, so the
@@ -122,7 +123,7 @@ window.__ModuleLoader__.load({
       ctx.effect(() => installStyle(clientModuleId), 'ds-harness-remote: client styles')
       ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
         name: 'sidebar.footer.action',
-        id: 'ds-harness-remote-workspace',
+        id: 'dsh-remote-over-tailnet-workspace',
         order: -20,
         locale: localeNamespace,
         inject: () => ({
@@ -165,7 +166,7 @@ window.__ModuleLoader__.load({
       // and a single row's page (the bundle's README moved the card far down).
       ctx.slots.inject('plugins.detail.actions', () => ctx.slots.register({
         name: 'plugins.detail.actions',
-        id: 'ds-harness-remote-settings-link',
+        id: 'dsh-remote-over-tailnet-settings-link',
         order: 30,
         locale: localeNamespace,
         inject: () => ({}),

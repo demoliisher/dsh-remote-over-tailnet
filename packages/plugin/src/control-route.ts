@@ -2,7 +2,8 @@ import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:
 import type { ControlResult } from './control-result.js'
 
 /** Namespaced loopback RPC prefix shared by the Host runtime and browser UI. */
-export const CONTROL_RPC_PREFIX = '/ds-harness-remote'
+// 上游 ds-harness-remote 占用 /ds-harness-remote，同前缀会让后注册者直接失败，故使用自己的命名空间。
+export const CONTROL_RPC_PREFIX = '/dsh-remote-over-tailnet'
 
 /** Loopback control endpoint carrying the status event stream. */
 export const STATUS_STREAM_ENDPOINT = 'status.events'

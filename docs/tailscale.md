@@ -53,13 +53,15 @@ ROT 不依赖系统安装的 Tailscale：插件把 tsnet 编译成 WebAssembly �
 
 凭据保存在 `$DSH_HOME/dsh-remote-over-tailnet/tailnet/credentials.json`（权限 0600）。弹窗里可以查看并复制；删除该文件后插件会重新生成账号密码，中继数据中的旧令牌随之失效，Host 会自动重新注册。
 
-### 和 ds-harness-remote 不能同时装
+### 和 ds-harness-remote 同时安装
 
-本插件与上游插件 `ds-harness-remote` 注册同一个 DSH Remote 服务（`dshRemote`）和同一条控制接口前缀 `/ds-harness-remote`，两者只能有一个生效：谁先加载谁可用，另一个要么拿不到服务，要么注册接口时报 `duplicate prefix route "/ds-harness-remote"`。加载顺序每次启动都可能不同。
+上游插件 `ds-harness-remote` 也实现 DSH Remote，两边可以同时安装，与加载顺序无关：
 
-本插件失去接口时不会启动内嵌节点与中继，表现是弹窗一直停在「启动远程服务后…」、节点在 `tailscale status` 里离线。请把 `ds-harness-remote` 卸载或从 profile 的 bundle 列表里移除后重启 Desktop。
+- 控制接口：本插件用自己的前缀 `/dsh-remote-over-tailnet`，界面入口、设置项与语言包也用自己的名字，不会顶掉对方的接口或在浏览器里抢先挂载。
+- 服务名：`dshRemote` 是对外约定，上游插件启用时本插件不再注册自己的实例，把服务名让给它；本插件照常运行，弹窗与客户端走自己的控制接口。
+- 局域网直传：上传路径仍是 `/ds-harness-remote/upload/<ticket>`，这是与客户端约定的协议路径，两边一致。
 
-本插件面向用 tailnet 组网、电脑只作被控端的用户，用不到 `ds-harness-remote` 的公共网关与其他功能，因此只保留一个即可。
+一个 profile 里同时开两个远程入口没有实际用处，客户端填一处地址即可：要 `ds-harness-remote` 的公共网关或其他功能就留着它，只用 tailnet 直连时卸载它、只留本插件。
 
 ### 想放到数据盘
 

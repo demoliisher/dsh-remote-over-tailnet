@@ -1,5 +1,5 @@
 // Shared dictionaries and typing for the injected Remote client UI.
-export const localeNamespace = 'ds-harness-remote'
+export const localeNamespace = 'dsh-remote-over-tailnet'
 
 export const en = {
   pluginTitle: 'Remote Over Tailnet',
