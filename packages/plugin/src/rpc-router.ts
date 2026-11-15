@@ -1,7 +1,11 @@
+import type { LanUploadHost } from './lan-upload.js'
 import {
+  BINARY_UPLOAD_CAPABILITY,
+  LAN_UPLOAD_CAPABILITY,
   createRpcError,
   createRpcResponse,
   parseRemoteWorkspaceTypes,
+  REMOTE_COMPACTION_CAPABILITY,
   type RemoteMessage,
   type RemoteWorkspaceTypeDescription,
   type RpcErrorPayload,
@@ -13,15 +17,26 @@ import type { RemoteFileViewerBridge } from './file-viewer-bridge.js'
 import type { HarnessRemoteBridge } from './harness-remote-bridge.js'
 import type { SafeLogger } from './logging.js'
 import type { CodexPeerBridge } from './codex/peer-bridge.js'
-import { RpcError, safeErrorCode } from './safe-error.js'
+import { RpcError, safeErrorCode, workspaceFileFailureReason } from './safe-error.js'
 import type { WorkspaceUploadHost } from './workspace-upload.js'
 import type { PluginRouteBridge } from './plugin-route-bridge.js'
+import type { RemoteCompactionOperations, RemoteCompactionOwner } from './remote-compaction-operations.js'
 
 export { RpcError } from './safe-error.js'
 
 const wireRequestSchema = z.object({ method: z.string().min(1), params: z.unknown() }).strict()
 const emptyParamsSchema = z.object({}).strict()
 const historyConfigureSchema = z.object({ compact: z.boolean() }).strict()
+const compactionSessionSchema = z.string().min(1).max(128)
+const compactionSubmitSchema = z.object({
+  sessionId: compactionSessionSchema,
+  requestId: z.string().min(1).max(128).regex(/^[A-Za-z0-9._:-]+$/),
+  budgetMs: z.number().int().min(60_000).max(7_200_000).optional(),
+}).strict()
+const compactionOperationSchema = z.object({
+  sessionId: compactionSessionSchema,
+  operationId: z.string().uuid(),
+}).strict()
 const apiMethods = new Set([
   'harness.transport.describe',
   'remote.history.configure',
@@ -33,6 +48,9 @@ const apiMethods = new Set([
   'harness.remote.transfer.close',
   'harness.remote.stream.open',
   'harness.remote.stream.close',
+  'harness.remote.compaction.submit',
+  'harness.remote.compaction.status',
+  'harness.remote.compaction.cancel',
   'loopback.call',
   'fileviewer.call',
   'codex.app.call',
@@ -45,8 +63,10 @@ const apiMethods = new Set([
   'codex.app.transfer.read',
   'codex.app.transfer.close',
   'plugin.route.call',
+  'workspace.upload.lan.open',
   'workspace.upload.open',
   'workspace.upload.chunk',
+  'workspace.upload.chunk.binary',
   'workspace.upload.commit',
   'workspace.upload.abort',
 ])
@@ -60,6 +80,12 @@ export const HOST_CAPABILITIES = [
   'codex.appserver.transfer.v1',
 ] as const
 
+/** Per-connection view of the Host-wide async compaction registry. */
+export interface RemoteCompactionRoute {
+  operations: RemoteCompactionOperations
+  owner: RemoteCompactionOwner
+}
+
 export class RpcRouter {
   private active = 0
 
@@ -68,12 +94,14 @@ export class RpcRouter {
     private readonly logger?: SafeLogger,
     private readonly fileViewer?: RemoteFileViewerBridge,
     private readonly harnessRemote?: HarnessRemoteBridge,
-    private readonly capabilities: () => readonly string[] = () => HOST_CAPABILITIES,
+    private readonly capabilities: () => readonly string[] | Promise<readonly string[]> = () => HOST_CAPABILITIES,
     private readonly codex?: CodexPeerBridge,
     private readonly loopback?: LoopbackHost,
     private readonly workspaceTypes?: () => readonly RemoteWorkspaceTypeDescription[],
     private readonly pluginRoute?: PluginRouteBridge,
     private readonly workspaceUpload?: WorkspaceUploadHost,
+    private readonly compaction?: RemoteCompactionRoute,
+    private readonly lanUpload?: LanUploadHost,
   ) {}
 
   async closePeerStreams(): Promise<void> {
@@ -82,6 +110,7 @@ export class RpcRouter {
       this.harnessRemote?.closeAll(),
       this.codex?.closeAll(),
       this.workspaceUpload?.closeAll(),
+      this.lanUpload?.closeAll(),
     ])
   }
 
@@ -117,12 +146,14 @@ export class RpcRouter {
         && typeof (request.payload.params as Record<string, unknown> | undefined)?.endpoint === 'string'
         ? String((request.payload.params as Record<string, unknown>).endpoint)
         : undefined
+      const reason = workspaceFileFailureReason(error)
       this.logger?.warn('host rpc failed', {
         method: request.payload.method,
         ...(failedEndpoint ? { endpoint: failedEndpoint } : {}),
         durationMs: Math.round(performance.now() - startedAt),
         code: response.payload.code,
         retryable: response.payload.retryable,
+        ...(reason === undefined ? {} : { reason }),
       })
       return response
     } finally {
@@ -130,12 +161,16 @@ export class RpcRouter {
     }
   }
 
-  private invoke(method: string, params: unknown): Promise<unknown> | unknown {
+  private async invoke(method: string, params: unknown): Promise<unknown> {
     switch (method) {
       case 'harness.transport.describe': {
         emptyParamsSchema.parse(params)
-        const capabilities = [...new Set([...this.capabilities(), 'remote.history.compact.v1',
-          ...(this.harnessRemote === undefined ? [] : ['harness.remote.stream.transfer.v1']),
+        const hostCapabilities = (await this.capabilities()).filter(capability => capability !== BINARY_UPLOAD_CAPABILITY && capability !== LAN_UPLOAD_CAPABILITY)
+        const remoteAvailable = hostCapabilities.includes('harness.remote.v1') || hostCapabilities.includes('harness.remote.v3')
+        const capabilities = [...new Set([...hostCapabilities, 'remote.history.compact.v1',
+          ...(this.harnessRemote === undefined || !remoteAvailable ? [] : ['harness.remote.stream.transfer.v1']),
+          ...(this.compaction === undefined ? [] : [REMOTE_COMPACTION_CAPABILITY]),
+          ...(this.workspaceUpload === undefined || !hostCapabilities.includes('workspace.upload.v1') ? [] : [BINARY_UPLOAD_CAPABILITY, ...(this.lanUpload ? [LAN_UPLOAD_CAPABILITY] : [])]),
         ])]
         let workspaceTypes: RemoteWorkspaceTypeDescription[] | undefined
         if (this.workspaceTypes !== undefined) {
@@ -156,6 +191,18 @@ export class RpcRouter {
           if (bridge !== undefined) bridge.compactHistoryEnabled = compact
         }
         return { compact }
+      }
+      case 'harness.remote.compaction.submit': {
+        const route = this.requireCompaction()
+        return route.operations.submit(compactionSubmitSchema.parse(params), route.owner)
+      }
+      case 'harness.remote.compaction.status': {
+        const route = this.requireCompaction()
+        return route.operations.status(compactionOperationSchema.parse(params), route.owner)
+      }
+      case 'harness.remote.compaction.cancel': {
+        const route = this.requireCompaction()
+        return route.operations.cancel(compactionOperationSchema.parse(params), route.owner)
       }
       case 'harness.remote.call': return this.requireRemoteGateway().call(params)
       case 'harness.remote.transfer.open': return this.requireRemoteGateway().openTransfer(params)
@@ -184,8 +231,13 @@ export class RpcRouter {
       case 'codex.app.transfer.commit': return this.requireCodex().commitTransfer(params)
       case 'codex.app.transfer.read': return this.requireCodex().readTransfer(params)
       case 'codex.app.transfer.close': return this.requireCodex().closeTransfer(params)
+      case 'workspace.upload.lan.open': {
+        if (!this.lanUpload) throw new RpcError('FEATURE_NOT_SUPPORTED', 'LAN upload is unavailable on this Host.')
+        return this.lanUpload.open(params)
+      }
       case 'workspace.upload.open':
       case 'workspace.upload.chunk':
+      case 'workspace.upload.chunk.binary':
       case 'workspace.upload.commit':
       case 'workspace.upload.abort': {
         if (!this.workspaceUpload) throw new RpcError('FEATURE_NOT_SUPPORTED', 'Workspace upload is unavailable on this Host.')
@@ -194,6 +246,13 @@ export class RpcRouter {
       case 'plugin.route.call': return this.requirePluginRoute().call(params)
       default: throw new RpcError('METHOD_NOT_FOUND', 'The requested method does not exist.')
     }
+  }
+
+  private requireCompaction(): RemoteCompactionRoute {
+    if (this.compaction === undefined) {
+      throw new RpcError('FEATURE_NOT_SUPPORTED', 'This Host does not provide asynchronous Remote compaction.')
+    }
+    return this.compaction
   }
 
   private requireRemoteGateway(): HarnessRemoteBridge {

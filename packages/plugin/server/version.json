@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "pluginVersion": "0.1.0",
-  "upstreamVersion": "v0.6.4",
-  "builtAt": "2026-11-14T16:06:20.004Z",
-  "serverSha256": "1c2b85d8ec67dc317a35962582a795ac30ae31d6190a70ebdd968db7d223bcd7"
+  "upstreamVersion": "v0.6.5",
+  "builtAt": "2026-11-15T05:35:35.001Z",
+  "serverSha256": "b6e22e6ca784aed25037035d3ff7f5b71b258067c7e6adbc4a98f1b4065a83de"
 }

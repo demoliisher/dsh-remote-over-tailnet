@@ -1,13 +1,15 @@
+import { LanUploadHost } from './lan-upload.js'
 import { WorkspaceUploadHost } from './workspace-upload.js'
 import { workspaceUploadRootResolver } from './workspace-upload-authority.js'
 import { LoopbackHost } from './loopback-host.js'
 import { TerminalPolicy } from './terminal-policy.js'
-import { createEvent, type RemoteWorkspaceTypeDescription } from '@dsh-remote/protocol'
+import { createEvent, REMOTE_SESSION_EVENTS_CAPABILITY, type RemoteWorkspaceTypeDescription } from '@dsh-remote/protocol'
 import { ConnectionController } from './connection-controller.js'
 import type { ResolvedConfig } from './config.js'
 import type { HostIdentity, IdentityStore } from './identity-store.js'
 import {
   harnessSessionGeneration,
+  isLiveSessionEventsHarnessVersion,
   readHarnessDistributionVersion,
 } from './harness-version.js'
 import type { SafeLogger } from './logging.js'
@@ -20,7 +22,8 @@ import {
 } from './server-api.js'
 import { HostServerConnection } from './server-connection.js'
 import { ServerCredentialStore } from './server-credentials.js'
-import { HarnessRemoteBridge, type ScheduleCreateService } from './harness-remote-bridge.js'
+import { dispatchCommandForHost, HarnessRemoteBridge, type ScheduleCreateService } from './harness-remote-bridge.js'
+import { readCompactionConfirmation, RemoteCompactionOperations } from './remote-compaction-operations.js'
 import type { PluginRouteDispatcher } from './plugin-route-bridge.js'
 import { PluginRouteBridge } from './plugin-route-bridge.js'
 import type { LocalTypertGateway } from './typert-gateway-contract.js'
@@ -72,6 +75,11 @@ export class HostPluginRuntime {
   private readonly codexWorkspaceState = new CodexWorkspaceState(key => TerminalPolicy.releaseOwner(this.terminalOwners, key))
   private localCodexPeer?: CodexPeerBridge
   private localCodexPublish: PublishCodexFrame = async () => undefined
+  /**
+   * 异步压缩的登记表挂在运行时上，而不是挂在某条连接上：客户端断线不能中断压缩。
+   */
+  private readonly compactionOperations: RemoteCompactionOperations
+  private warnedMissingHostApi = false
 
   constructor(
     private readonly config: ResolvedConfig,
@@ -90,8 +98,42 @@ export class HostPluginRuntime {
     this.loopbackPorts = [...config.loopback.ports]
     this.controlEnabled = config.service.enabled
     this.codex = new CodexRemoteDomain(config.codex, logger)
+    // 每个压缩任务用自己从 Host 网关注出来的 Peer 执行，生命周期与提交它的连接无关。
+    this.compactionOperations = new RemoteCompactionOperations(async (sessionId, signal) => {
+      const gateway = this.localGateway?.createPeer?.() ?? this.localGateway
+      if (gateway === undefined) throw new RpcError('HARNESS_UNAVAILABLE', 'The Host Harness gateway is unavailable.')
+      try {
+        return await dispatchCommandForHost(
+          gateway,
+          { args: { agentId: sessionId, line: '/compact' } },
+          signal,
+          this.harnessVersion,
+        )
+      } finally {
+        await gateway.dispose?.()
+      }
+    }, {
+      logger,
+      // `commands/execute` 在调用方中止后不再等待处理函数，所以最终结果只能看 Session 日志。
+      confirm: async (sessionId, acceptedAt, commandId) => {
+        const gateway = this.localGateway?.createPeer?.() ?? this.localGateway
+        if (gateway === undefined) return { kind: 'unknown' }
+        try {
+          const result = await gateway.dispatch('session/events', {
+            args: { request: { address: { kind: 'session', sessionId }, maxMessages: 128 } },
+          }, AbortSignal.timeout(5_000))
+          return readCompactionConfirmation(result, acceptedAt, commandId)
+        } catch {
+          return { kind: 'unknown' }
+        } finally {
+          await gateway.dispose?.()
+        }
+      },
+    })
     this.connections = new ConnectionController(this.identities, (context, send) => {
       const peerGateway = this.localGateway?.createPeer?.() ?? this.localGateway
+      const uploadDispatcher = this.pluginRoutes?.(peerGateway?.peer)
+      const uploadBridge = uploadDispatcher === undefined ? undefined : new PluginRouteBridge(uploadDispatcher, this.logger)
       const harnessRemote = peerGateway?.supportsCarrier === true
         ? new HarnessRemoteBridge(
             peerGateway,
@@ -112,6 +154,7 @@ export class HostPluginRuntime {
               undefined,
             ),
             this.schedule,
+            uploadBridge === undefined ? undefined : body => uploadBridge.call({ route: 'api/session/uploadFileBinary', body }, true),
           )
         : undefined
       const fileViewer = new RemoteFileViewerBridge(
@@ -127,23 +170,38 @@ export class HostPluginRuntime {
       // plugin is activated.
       const dispatcher = this.pluginRoutes?.(peerGateway?.peer)
       const pluginRoute = dispatcher === undefined ? undefined : new PluginRouteBridge(dispatcher, this.logger)
+      const workspaceUpload = new WorkspaceUploadHost(workspaceUploadRootResolver(
+        peerGateway,
+        () => harnessSessionGeneration(this.harnessVersion) === 'v3',
+        threadId => this.codex.resolveThreadWorkspace(context.connectionId, threadId),
+        undefined,
+      ), undefined, context.transportMode)
+      // LAN 直连上传只在已知对端身份、且通道确实走了局域网时才开放。
+      const lanUpload = context.peerIdentityKey !== undefined && context.transportMode !== undefined
+        ? new LanUploadHost(workspaceUpload, {
+            connectionId: context.connectionId,
+            peerIdentityKey: context.peerIdentityKey,
+            identity: () => this.currentIdentity(),
+            mode: context.transportMode,
+          })
+        : undefined
       return new RpcRouter(
         undefined,
         this.logger,
         fileViewer,
         harnessRemote,
-        () => this.hostCapabilities(),
+        () => this.transportCapabilities(peerGateway),
         codex,
         // Handles and their lifetime belong to this connection; only policy is shared.
         this.createLoopbackHost(),
         () => this.hostWorkspaceTypes(),
         pluginRoute,
-        new WorkspaceUploadHost(workspaceUploadRootResolver(
-          peerGateway,
-          () => harnessSessionGeneration(this.harnessVersion) === 'v3',
-          threadId => this.codex.resolveThreadWorkspace(context.connectionId, threadId),
-          undefined,
-        ), undefined, context.transportMode),
+        workspaceUpload,
+        {
+          operations: this.compactionOperations,
+          owner: { deviceId: context.peerDeviceId, connectionId: context.connectionId },
+        },
+        lanUpload,
       )
     }, this.logger)
     if (config.serverUrl !== undefined) {
@@ -347,6 +405,7 @@ export class HostPluginRuntime {
     this.closed = true
     this.serverApi?.close()
     await this.serverConnection?.stop()
+    this.compactionOperations.closeAll()
     await this.connections.close()
     await this.localCodexPeer?.closeAll()
     this.localCodexPeer = undefined
@@ -411,6 +470,61 @@ export class HostPluginRuntime {
     if (this.pluginRoutes?.() !== undefined) capabilities.push('plugin.route.v1')
     if (this.codex.isAvailable()) capabilities.push('codex.appserver.v1', 'codex.appserver.transfer.v1')
     return capabilities
+  }
+
+  /**
+   * 有能力协商时才行探测：Host 的 Session API 是否真的挂上了，决定能不能给
+   * 会话事件与异步压缩这两项能力。探测失败连接直接拒绝，避免客户端按能力
+   * 下单却在 Host 侧落空。
+   */
+  private async transportCapabilities(gateway?: LocalTypertGateway): Promise<string[]> {
+    const capabilities = this.hostCapabilities()
+    if (gateway?.supportsCarrier !== true) return capabilities
+    let result: Awaited<ReturnType<LocalTypertGateway['dispatch']>>
+    try {
+      result = await gateway.dispatch('session/list', { args: { _request: {} } }, AbortSignal.timeout(5_000))
+    } catch {
+      throw new RpcError('CONNECTION_FAILED', 'Cannot verify the Host Session API.', undefined, true)
+    }
+    if (result.ok) {
+      if (isLiveSessionEventsHarnessVersion(this.harnessVersion) && await this.probeLiveSessionEvents(gateway)) {
+        capabilities.push(REMOTE_SESSION_EVENTS_CAPABILITY)
+      }
+      return capabilities
+    }
+    if (result.error.code === 'gateway/service-unavailable') {
+      throw new RpcError('CONNECTION_FAILED', 'The Host Session API is not ready.', undefined, true)
+    }
+    if (result.error.code !== 'gateway/invocation-unavailable') {
+      throw new RpcError('CONNECTION_FAILED', 'Cannot verify the Host Session API.', undefined, true)
+    }
+    if (!this.warnedMissingHostApi) {
+      this.warnedMissingHostApi = true
+      this.logger.warn('Host Remote API is incomplete. Install @deepseek-ai/dsh-api-remotes and its Host API packages.')
+    }
+    return capabilities.filter(value => !value.startsWith('harness.remote.') && value !== 'harness.terminal.v1')
+  }
+
+  private async probeLiveSessionEvents(gateway: LocalTypertGateway): Promise<boolean> {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 2_000)
+    let iterator: AsyncIterator<unknown> | undefined
+    try {
+      const stream = await gateway.open('$events', { args: {} }, controller.signal)
+      iterator = stream[Symbol.asyncIterator]()
+      const first = await iterator.next()
+      return !first.done
+        && typeof first.value === 'object'
+        && first.value !== null
+        && !Array.isArray(first.value)
+        && (first.value as { type?: unknown }).type === 'ready'
+    } catch {
+      return false
+    } finally {
+      clearTimeout(timeout)
+      controller.abort()
+      await iterator?.return?.().catch(() => undefined)
+    }
   }
 
   private hostWorkspaceTypes(): RemoteWorkspaceTypeDescription[] {
