@@ -69,7 +69,7 @@ pnpm build:server
 
 ## 本地验证
 
-不要动用户桌面 profile（`--profile web`）。用独立 `DSH_HOME` 和独立 profile 验证：
+不要动用户的桌面 profile（`--profile desktop`）。用独立 `DSH_HOME` 和独立 profile 验证：
 
 ```powershell
 $env:DSH_HOME = 'D:\path\to\.scratch\dsh-home'
@@ -78,11 +78,11 @@ $env:DSH_HOME = 'D:\path\to\.scratch\dsh-home'
 
 隔离 profile 的 `package.json` 用 `link:` 指向本仓库，并把插件列入 `dsh.profile.bundles`。日志会打印 `tailnet relay ready`、`host identity ready`、`Host account authorized` 与 `server control connection online`。浏览器地址中的 token 从日志首行 `dsh web: ...` 获取。
 
-停止隔离实例时按命令行精确过滤，避免误杀当前 runner 或桌面实例：
+停止隔离实例时按命令行精确过滤 `--profile dev`，避免误杀当前 runner 或桌面实例：
 
 ```powershell
 Get-CimInstance Win32_Process -Filter "Name='DeepSeek Harness.exe'" |
-  Where-Object { $_.CommandLine -match 'cli\.js' -and $_.CommandLine -notmatch 'runner\.js' -and $_.CommandLine -notmatch '--profile web' } |
+  Where-Object { $_.CommandLine -match 'cli\.js' -and $_.CommandLine -match '--profile dev' } |
   Stop-Process -Force
 ```
 

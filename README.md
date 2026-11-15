@@ -16,10 +16,10 @@ ROT 是 DeepSeek Harness Desktop 的 Host 插件，主要面向 Windows 上的 D
 
 ## 安装
 
-把 ROT 装进要对外提供远程访问的那个 profile（桌面版默认是 `web`），然后重启 DeepSeek Harness Desktop：
+把 ROT 装进要对外提供远程访问的那个 profile。DeepSeek Harness Desktop 启动的是 `desktop` profile，`dsh web` 命令行服务启动的是 `web` profile，两者互不相干。装完重启 DeepSeek Harness Desktop：
 
 ```powershell
-dsh plugin --profile web add dsh-remote-over-tailnet
+dsh plugin --profile desktop add dsh-remote-over-tailnet
 ```
 
 也可以在插件页点「添加插件」（Add plugin）选中已经构建好的插件目录，这种方式适合自己构建的用户，构建步骤见[开发、构建与本地验证](docs/development.md)。仓库里不保存构建产物，直接克隆源码的目录装不了。
