@@ -12,7 +12,7 @@ export interface Config {
   terminal?: { enabled?: boolean }
   /** Where the Desktop client shows the Remote entry: beside Settings or in the account row. */
   sidebar?: { entry?: 'standard' | 'compact' }
-  /** 「远程服务」总开关：中继、Tailscale 转发与 Host 控制连接一起启停。 */
+  /** 「中继服务」总开关：中继、Tailscale 转发与 Host 控制连接一起启停。 */
   service?: { enabled?: boolean }
   loopback?: { ports?: number[] }
   /**
@@ -32,7 +32,7 @@ export interface Config {
    */
   ssh?: {
     enabled?: boolean
-    /** tailnet 上的监听端口，与中继的 80 端口分开。 */
+    /** tailnet 上的监听端口，与中继的 80 端口分开；默认 22，DSH Go 不用改端口。 */
     port?: number
   }
   forceRelay?: boolean
@@ -167,7 +167,7 @@ const configSchema = z.object({
   }).strict().optional(),
   ssh: z.object({
     enabled: z.boolean().optional(),
-    port: z.number().int().min(1024).max(65535).optional(),
+    port: z.number().int().min(1).max(65535).optional(),
   }).strict().optional(),
   forceRelay: z.boolean().optional(),
   rotatePinnedPeerKey: z.boolean().optional(),
@@ -204,7 +204,7 @@ export function resolveConfig(input: ConfigInput = {}, env: NodeJS.ProcessEnv = 
     },
     ssh: {
       enabled: parsed.ssh?.enabled ?? false,
-      port: parsed.ssh?.port ?? 2222,
+      port: parsed.ssh?.port ?? 22,
     },
     forceRelay: parsed.forceRelay ?? false,
     rotatePinnedPeerKey: parsed.rotatePinnedPeerKey ?? false,

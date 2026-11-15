@@ -19,11 +19,12 @@ describe('plugin config', () => {
     expect(resolveConfig({}, { DSH_REMOTE_TERMINAL_ENABLED: 'false' }).terminal.enabled).toBe(false)
   })
 
-  // SSH 模式默认关闭，避免没打算用的人多开一个监听；端口限制在非特权区间。
+  // SSH 模式默认关闭，避免没打算用的人多开一个监听；端口是 tailnet 内的虚拟端口，默认取 22 与 DSH Go 一致。
   it('keeps SSH off by default and validates its port when enabled', () => {
-    expect(resolveConfig({}).ssh).toEqual({ enabled: false, port: 2222 })
+    expect(resolveConfig({}).ssh).toEqual({ enabled: false, port: 22 })
+    expect(resolveConfig({ ssh: { enabled: true, port: 22 } }).ssh).toEqual({ enabled: true, port: 22 })
     expect(resolveConfig({ ssh: { enabled: true, port: 2200 } }).ssh).toEqual({ enabled: true, port: 2200 })
-    expect(() => resolveConfig({ ssh: { enabled: true, port: 22 } })).toThrow()
+    expect(() => resolveConfig({ ssh: { enabled: true, port: 0 } })).toThrow()
     expect(() => resolveConfig({ ssh: { enabled: true, port: 70_000 } })).toThrow()
   })
 

@@ -12,7 +12,7 @@
 ## 开始使用
 
 1. 在 DeepSeek Harness Desktop 安装并启用 ROT，重启 Desktop。
-2. 打开「插件 → Remote Over Tailnet → 远程设置」，打开「远程服务」开关。
+2. 打开「插件 → Remote Over Tailnet → 远程设置」，在「DSH Remote 本地中继服务」那一行右侧打开开关。
 3. 首次开启时面板给出授权链接，在浏览器里登录 tailnet 账号并同意加入；也可以在配置里填 `tailnet.authKey` 跳过这一步。
 4. 在 DSH Remote 客户端（例如 DSH Go）中添加自定义服务器，填入面板显示的地址与账号密码。
 

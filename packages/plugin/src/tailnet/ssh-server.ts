@@ -73,8 +73,9 @@ function sameSecret(expected: string, actual: string): boolean {
 /**
  * 启动进程内 SSH 服务。
  *
- * 服务端只接受密码认证，认证通过后只放行到 127.0.0.1:targetPort 的 direct-tcpip 通道，
- * 也就是当前 DSH Web 端口；session、sftp、agent 转发等通道一律拒绝，因此这条 SSH
+ * 服务端只接受密码认证，认证通过后只放行 direct-tcpip 通道，目标固定是 127.0.0.1 上的
+ * 当前 DSH Web 端口。客户端请求里的目标地址与端口一律忽略，因此 Desktop 每次启动换随机
+ * 端口，客户端里的那一栏也不用跟着改。session、sftp、agent 转发等通道全部拒绝，这条 SSH
  * 能做的事被限制在「替 DSH Go 打通到这一个实例的隧道」。
  */
 export async function startSshServer(options: SshServerOptions): Promise<SshServerHandle> {
@@ -105,10 +106,13 @@ export async function startSshServer(options: SshServerOptions): Promise<SshServ
     })
     client.on('tcpip', (accept, reject, info) => {
       const target = options.targetPort()
-      if (target === undefined || info.destPort !== target) {
+      if (target === undefined) {
         reject()
         return
       }
+      // 拨号目标只由服务端决定：客户端在「远端 DSH 端口」里填什么都落到当前的 DSH Web 端口，
+      // 请求里的 destIP 与 destPort 只写进调试日志，不参与拨号。
+      options.logger.debug('ssh tunnel opened', { requestedPort: info.destPort, port: target })
       const channel = accept()
       const upstream = net.connect({ host: '127.0.0.1', port: target })
       upstream.setNoDelay(true)

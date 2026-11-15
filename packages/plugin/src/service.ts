@@ -45,7 +45,7 @@ export interface HostRemoteStatus {
   deviceId?: string
   deviceName?: string
   configured: boolean
-  /** 「远程服务」总开关：关闭时控制连接不启动，设备身份与授权保留。 */
+  /** 「中继服务」总开关：关闭时控制连接不启动，设备身份与授权保留。 */
   enabled: boolean
   online: boolean
   reconnecting: boolean
@@ -312,7 +312,7 @@ export class HostPluginRuntime {
   }
 
   /**
-   * 「远程服务」总开关的 Host 侧动作。关闭只停控制连接，设备授权与身份保持不变；
+   * 「中继服务」总开关的 Host 侧动作。关闭只停控制连接，设备授权与身份保持不变；
    * 重新打开时直接恢复连接，本机凭据缺失时由调用方先重新授权。
    *
    * connect 为 false 只记录开关状态，不建立连接：内嵌节点还在等 Tailscale 授权时，

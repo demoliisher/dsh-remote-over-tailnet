@@ -21,6 +21,8 @@ export interface TailnetView {
   enabled: boolean
   phase: 'disabled' | 'probing' | 'starting' | 'auth-required' | 'ready' | 'error'
   dnsName?: string
+  /** 节点的 tailnet IPv4 地址；面板可切换按域名或按 IP 呈现。 */
+  ipv4?: string
   publicUrl?: string
   relayPort?: number
   relayPid?: number

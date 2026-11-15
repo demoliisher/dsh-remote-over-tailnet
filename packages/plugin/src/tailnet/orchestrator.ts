@@ -48,6 +48,8 @@ export interface TailnetSnapshot {
   enabled: boolean
   phase: TailnetPhase
   dnsName?: string
+  /** 节点的 tailnet IPv4 地址；面板可切换按域名或按 IP 呈现。 */
+  ipv4?: string
   publicUrl?: string
   relayPort?: number
   relayPid?: number
@@ -66,13 +68,13 @@ export interface TailnetSnapshot {
 export interface TailnetControl {
   snapshot(): TailnetSnapshot | undefined
   credentials(): RelayCredentials | undefined
-  /** 远程服务停止时保存中继账号密码，供下次启动使用。 */
+  /** 中继服务停止时保存中继账号密码，供下次启动使用。 */
   saveCredentials(credentials: RelayCredentials): Promise<TailnetSnapshot | undefined>
   /** SSH 模式的登录信息；未启用或尚未就绪时为空。 */
   sshCredentials(): { username: string; password: string; port: number; token?: string } | undefined
   /** 运行中修改 SSH 模式的开关与端口，不重启节点；失败抛出由控制层回报。 */
   applySsh(ssh: ResolvedConfig['ssh']): Promise<TailnetSnapshot | undefined>
-  /** 运行中修改「远程服务」开关：只起停中继，节点留给 SSH 模式继续用。 */
+  /** 运行中修改「中继服务」开关：只起停中继，节点留给 SSH 模式继续用。 */
   applyService(enabled: boolean): Promise<TailnetSnapshot | undefined>
   /** 启动内嵌节点与本地中继；失败写入快照，不抛出。 */
   start(): Promise<void>
@@ -182,10 +184,10 @@ export class TailnetOrchestrator implements TailnetControl {
         return this.snapshot()
       }
       await this.stop()
-      this.markStopped('远程服务与 SSH 都已关闭。')
+      this.markStopped('中继服务与 SSH 都已关闭。')
       return this.snapshot()
     }
-    // 只开 SSH 时节点本来没跑：把节点拉起来；中继这一半看「远程服务」开关。
+    // 只开 SSH 时节点本来没跑：把节点拉起来；中继这一半看「中继服务」开关。
     if (this.node === undefined) {
       await this.start()
       return this.snapshot()
@@ -224,18 +226,17 @@ export class TailnetOrchestrator implements TailnetControl {
   /**
    * 保存 DSH Remote 与 SSH 共用的账号密码。
    *
-   * 中继运行时锁住旧凭据，改动要等下次启动才生效；只开着 SSH 时可以随时改，
-   * SSH 认证每次取现值，改完立即使用新账号与密码。
+   * 账号密码由中继与 SSH 共用，任一服务运行中都拒绝改动：中继把旧凭据带进下次启动，
+   * SSH 每次认证都读现值，运行期改动会让两条通道的凭据不一致。
    */
   async saveCredentials(next: RelayCredentials): Promise<TailnetSnapshot | undefined> {
     const { config, logger } = this.options
     if (!config.tailnet.enabled || tailnetRelayPort(config.serverUrl) === undefined) {
       throw new TailnetOrchestrationError('TAILNET_NOT_APPLICABLE', '当前服务器地址不使用内置中继，没有可保存的中继账号密码。')
     }
-    // 中继运行时会锁住旧凭据，改写入下次启动才能生效；只开着 SSH 时可以直接改，
-    // SSH 认证每次取现值，立即使用新账号与密码。
-    if (this.relay !== undefined) {
-      throw new TailnetOrchestrationError('TAILNET_RUNNING', '请先停止远程服务，再修改账号密码。')
+    // 账号密码由中继与 SSH 共用，任一服务在运行时都锁住，避免改到一半两条通道用上不同凭据。
+    if (this.relay !== undefined || this.ssh !== undefined) {
+      throw new TailnetOrchestrationError('TAILNET_RUNNING', '请先停止中继服务与 SSH 接入，再修改账号密码。')
     }
     const saved = await saveRelayCredentials(this.dataDirectory(), next)
     this.relayCredentials = saved
@@ -263,7 +264,7 @@ export class TailnetOrchestrator implements TailnetControl {
     }
     if (!this.wantsNode()) {
       await this.stop()
-      this.markStopped('远程服务与 SSH 都已关闭。')
+      this.markStopped('中继服务与 SSH 都已关闭。')
       return
     }
     // 节点是两套服务共用的底座：只切中继开关时不重建节点，直接补齐中继这一半。
@@ -337,6 +338,7 @@ export class TailnetOrchestrator implements TailnetControl {
       this.state.phase = 'starting'
       this.state.authUrl = undefined
       this.state.dnsName = dnsName
+      this.state.ipv4 = status.tailscaleIPs?.find(address => !address.includes(':'))
       this.state.publicUrl = publicUrlFor(dnsName)
       this.state.steps.node = { ok: true, detail: '节点已加入 tailnet：' + dnsName }
       this.publish()
@@ -353,7 +355,7 @@ export class TailnetOrchestrator implements TailnetControl {
     if (this.state === undefined) return
     try {
       if (this.wantsRelay()) await this.startRelay(relayPort)
-      else this.clearRelaySteps('远程服务已关闭')
+      else this.clearRelaySteps('中继服务已关闭')
       await this.startSsh()
       if (this.wantsRelay()) {
         this.state.steps.authorize = { ok: null, detail: '等待 Host 设备授权' }
@@ -372,7 +374,7 @@ export class TailnetOrchestrator implements TailnetControl {
     }
   }
 
-  /** 起本地中继，并在 tailnet 的 80 端口监听转发；只在「远程服务」开着时执行。 */
+  /** 起本地中继，并在 tailnet 的 80 端口监听转发；只在「中继服务」开着时执行。 */
   private async startRelay(relayPort: number): Promise<void> {
     const { logger } = this.options
     if (this.state === undefined) return
@@ -423,7 +425,7 @@ export class TailnetOrchestrator implements TailnetControl {
   /**
    * 只关掉中继这一套：停中继进程并关掉节点上的 80 端口监听，节点与 SSH 保持运行。
    *
-   * 「远程服务」和「SSH 接入」是两个独立模块，关掉一个不影响另一个用同一个节点。
+   * 「中继服务」和「SSH 接入」是两个独立模块，关掉一个不影响另一个用同一个节点。
    */
   private async stopRelay(): Promise<void> {
     const relay = this.relay
@@ -450,7 +452,7 @@ export class TailnetOrchestrator implements TailnetControl {
     this.publish()
   }
 
-  /** 远程服务（中继）是否应该在运行。 */
+  /** 中继服务（中继）是否应该在运行。 */
   private wantsRelay(): boolean {
     return this.options.config.service.enabled !== false
   }
@@ -466,7 +468,7 @@ export class TailnetOrchestrator implements TailnetControl {
   }
 
   /**
-   * 面板改「远程服务」开关时就地生效。
+   * 面板改「中继服务」开关时就地生效。
    *
    * 打开时补齐节点与中继；关闭时只停中继，SSH 还开着就保留节点，两边都关才整体停止。
    */
@@ -488,7 +490,7 @@ export class TailnetOrchestrator implements TailnetControl {
       return this.snapshot()
     }
     await this.stop()
-    this.markStopped('远程服务与 SSH 都已关闭。')
+    this.markStopped('中继服务与 SSH 都已关闭。')
     return this.snapshot()
   }
 
@@ -596,7 +598,7 @@ export class TailnetOrchestrator implements TailnetControl {
     this.node = undefined
     this.listeningPort = undefined
     if (node !== undefined) await node.close()
-    this.markStopped('远程服务已关闭。')
+    this.markStopped('中继服务已关闭。')
   }
 
   /** 停止后保留域名与地址，面板显示已停止而不是错误。 */

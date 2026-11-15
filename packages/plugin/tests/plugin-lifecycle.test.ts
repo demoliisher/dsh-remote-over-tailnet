@@ -98,7 +98,7 @@ describe('Cordis plugin lifecycle', () => {
     }
   })
 
-  it('keeps the remote service stopped when the switch is off at startup', async () => {
+  it('keeps the relay service stopped when the switch is off at startup', async () => {
     const dshHome = await temporaryDirectory('dsh-remote-host-control-off-')
     vi.stubEnv('DSH_HOME', dshHome)
     const fetchSpy = vi.fn<typeof fetch>(async () => { throw new Error('offline fixture') })
@@ -120,7 +120,7 @@ describe('Cordis plugin lifecycle', () => {
       await vi.waitFor(async () => {
         await expect(call('status')).resolves.toMatchObject({
           ok: true,
-          value: { tailnet: { enabled: false, phase: 'disabled', steps: { authorize: { detail: '远程服务已关闭。' } } } },
+          value: { tailnet: { enabled: false, phase: 'disabled', steps: { authorize: { detail: '中继服务已关闭。' } } } },
         })
       })
       expect(ctx.dshRemote.hostStatus()).toMatchObject({ enabled: false })

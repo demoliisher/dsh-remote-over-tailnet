@@ -12,7 +12,7 @@
 ## Get started
 
 1. Install and enable ROT in DeepSeek Harness Desktop, then restart Desktop.
-2. Open Plugins → Remote Over Tailnet → Remote settings and turn on the remote service.
+2. Open Plugins → Remote Over Tailnet → Remote settings and turn on the switch at the right of the "DSH Remote local relay service" row.
 3. The panel shows an authorization link the first time. Open it, sign in to the tailnet, and approve the node; setting `tailnet.authKey` skips this step.
 4. Add a custom server in a DSH Remote client (for example DSH Go) with the address and credentials shown in the panel.
 

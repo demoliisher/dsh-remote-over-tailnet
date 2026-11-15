@@ -155,8 +155,8 @@ describe('PluginControlRuntime device name', () => {
   })
 })
 
-describe('PluginControlRuntime remote service', () => {
-  it('turns the remote service off without revoking the device and persists the switch', async () => {
+describe('PluginControlRuntime relay service', () => {
+  it('turns the relay service off without revoking the device and persists the switch', async () => {
     const settings = settingsBinding({ serverUrl: 'https://relay.example.test' })
     const setHostControl = vi.fn(async (_enabled: boolean) => undefined)
     const authorizeHostWithAccount = vi.fn(async () => ({ method: 'account' }))
@@ -211,7 +211,7 @@ describe('PluginControlRuntime remote service', () => {
     expect(settings.get().service).toEqual({ enabled: true })
   })
 
-  it('stops only the local relay when the remote service is turned off', async () => {
+  it('stops only the local relay when the relay service is turned off', async () => {
     const settings = settingsBinding({ serverUrl: 'http://127.0.0.1:8080' })
     const host = hostStub()
     const tailnet = tailnetStub({ snapshot: tailnetSnapshot() })
@@ -225,7 +225,7 @@ describe('PluginControlRuntime remote service', () => {
     expect(settings.get().service).toEqual({ enabled: false })
   })
 
-  it('refuses to enable the remote service when the local relay is unavailable', async () => {
+  it('refuses to enable the relay service when the local relay is unavailable', async () => {
     const settings = settingsBinding({ serverUrl: 'http://127.0.0.1:8080' })
     const host = hostStub()
     const tailnet = tailnetStub({

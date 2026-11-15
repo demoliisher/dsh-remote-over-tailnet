@@ -155,11 +155,16 @@ describe('SSH 接入', () => {
     client.end()
   })
 
-  it('只放行当前 DSH 端口，其他端口一律拒绝', async () => {
+  // 回归：Desktop 每次启动都是随机端口，客户端里的「远端 DSH 端口」不能因此失效，
+  // 所以请求里的端口一律忽略，一律拨服务端记录的当前 DSH 端口。
+  it('忽略客户端请求的端口，一律拨当前 DSH 端口', async () => {
     const harness = await startHarness()
     const client = await connect(harness.bridgePort, ACCOUNT, PASSWORD)
-    client.on('error', () => undefined)
-    await expect(forward(client, harness.echoPort + 1)).rejects.toThrow()
+    const channel = await forward(client, harness.echoPort + 1)
+    const echoed = read(channel, 'ping')
+    channel.write('ping')
+    await expect(echoed).resolves.toBe('ping')
+    channel.end()
     client.end()
   })
 })

@@ -147,12 +147,12 @@ export class PluginControlRuntime {
   }
 
   /**
-   * 「远程服务」总开关：打开时先启动内嵌节点与本地中继，节点仍在等 Tailscale 授权时
+   * 「中继服务」总开关：打开时先启动内嵌节点与本地中继，节点仍在等 Tailscale 授权时
    * 只打开开关、由编排在就绪回调里完成 Host 授权与连接；关闭时先断开 Host 连接，再停止中继与节点。
    */
   private async setService(payload: unknown): Promise<Record<string, unknown>> {
     const value = record(payload)
-    if (typeof value.enabled !== 'boolean') throw new ControlError('INVALID_MESSAGE', '需要提供远程服务的开关状态。')
+    if (typeof value.enabled !== 'boolean') throw new ControlError('INVALID_MESSAGE', '需要提供中继服务的开关状态。')
     await this.persistService(value.enabled)
     if (!value.enabled) {
       await this.host?.setHostControl(false)
@@ -167,7 +167,7 @@ export class PluginControlRuntime {
     await this.tailnet.applyService(true)
     const snapshot = this.tailnet.snapshot()
     if (snapshot?.phase === 'error') {
-      throw new ControlError('REMOTE_SERVICE_UNAVAILABLE', snapshot.error?.message ?? '远程服务启动失败。')
+      throw new ControlError('REMOTE_SERVICE_UNAVAILABLE', snapshot.error?.message ?? '中继服务启动失败。')
     }
     if (snapshot?.phase !== 'disabled' && !this.tailnet.relayReady()) {
       // 节点还没入网（等授权或仍在启动）：先打开开关但不连接，
@@ -186,8 +186,8 @@ export class PluginControlRuntime {
     if (typeof value.enabled !== 'boolean') throw new ControlError('INVALID_MESSAGE', '需要提供 SSH 模式的开关状态。')
     const current = resolveConfig(this.settings.get())
     const port = value.port === undefined ? current.ssh.port : value.port
-    if (typeof port !== 'number' || !Number.isInteger(port) || port < 1024 || port > 65535) {
-      throw new ControlError('INVALID_MESSAGE', 'SSH 端口需为 1024 到 65535 之间的整数。')
+    if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new ControlError('INVALID_MESSAGE', 'SSH 端口需为 1 到 65535 之间的整数。')
     }
     const next = resolveConfig({ ...editableConfig(current), ssh: { enabled: value.enabled, port } })
     await this.settings.replace(editableConfig(next))
@@ -196,7 +196,7 @@ export class PluginControlRuntime {
     return this.hostOnlyStatus()
   }
 
-  /** 远程服务停止时保存账号密码；启动服务时再读取新凭据并完成 Host 授权。 */
+  /** 中继服务停止时保存账号密码；启动服务时再读取新凭据并完成 Host 授权。 */
   private async saveCredentials(payload: unknown): Promise<unknown> {
     if (this.tailnet === undefined) throw new ControlError('METHOD_NOT_ALLOWED', 'Tailscale 组网未启用。')
     const value = record(payload)

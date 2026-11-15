@@ -133,7 +133,7 @@ export class IdentityStore {
       const devicePath = join(this.directory, 'device.json')
       const keyPath = join(this.directory, 'device.key')
       const [hasDevice, hasKey] = await Promise.all([exists(devicePath), exists(keyPath)])
-      if (!hasDevice && !hasKey) throw new IdentityInvalidError('device identity does not exist; start the remote service before renaming it')
+      if (!hasDevice && !hasKey) throw new IdentityInvalidError('device identity does not exist; start the relay service before renaming it')
       if (hasDevice !== hasKey) throw new IdentityInvalidError('device identity is incomplete; repair it explicitly before renaming it')
       const identity = await this.readIdentity(devicePath, keyPath, deviceName)
       await removeStaleTemporaries(this.directory)
