@@ -1262,7 +1262,7 @@ function config(): ResolvedConfig {
     sidebar: { entry: 'standard' },
     loopback: { ports: [] },
     tailnet: { enabled: true },
-    ssh: { enabled: false, port: 22 },
+    ssh: { enabled: false },
     enabled: true,
     service: { enabled: true },
     serverUrl: 'https://relay.example.test',

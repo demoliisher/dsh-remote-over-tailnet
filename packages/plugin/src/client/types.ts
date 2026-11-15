@@ -109,7 +109,7 @@ export interface PluginSettings {
   sidebar?: { entry?: SidebarEntryStyle }
   service?: { enabled?: boolean }
   tailnet?: { enabled?: boolean; dataDirectory?: string; authKey?: string }
-  ssh?: { enabled?: boolean; port?: number }
+  ssh?: { enabled?: boolean }
 }
 
 export interface PluginSettingsView {

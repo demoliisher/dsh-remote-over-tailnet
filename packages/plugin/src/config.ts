@@ -83,7 +83,7 @@ export interface ResolvedCodexConfig {
     dataDirectory?: string
     authKey?: string
   }
-  ssh: { enabled: boolean; port: number }
+  ssh: { enabled: boolean }
   codex: ResolvedCodexConfig
 }
 
@@ -110,7 +110,7 @@ export const entryConfigSchema = s.object({
   service: s.object({ enabled: s.boolean() }),
   loopback: s.object({ ports: s.array(s.number()) }),
   tailnet: s.object({ enabled: s.boolean(), dataDirectory: s.string(), authKey: s.string() }),
-  ssh: s.object({ enabled: s.boolean(), port: s.number() }),
+  ssh: s.object({ enabled: s.boolean() }),
   forceRelay: s.boolean(),
   rotatePinnedPeerKey: s.boolean(),
   logLevel: s.union(['debug', 'info', 'warn', 'error'] as const),
@@ -165,10 +165,7 @@ const configSchema = z.object({
     dataDirectory: z.string().trim().min(1).max(4096).optional(),
     authKey: z.string().trim().min(1).max(512).optional(),
   }).strict().optional(),
-  ssh: z.object({
-    enabled: z.boolean().optional(),
-    port: z.number().int().min(1).max(65535).optional(),
-  }).strict().optional(),
+  ssh: z.object({ enabled: z.boolean().optional() }).strict().optional(),
   forceRelay: z.boolean().optional(),
   rotatePinnedPeerKey: z.boolean().optional(),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).optional(),
@@ -202,10 +199,7 @@ export function resolveConfig(input: ConfigInput = {}, env: NodeJS.ProcessEnv = 
       ...(parsed.tailnet?.dataDirectory === undefined ? {} : { dataDirectory: parsed.tailnet.dataDirectory }),
       ...(parsed.tailnet?.authKey === undefined ? {} : { authKey: parsed.tailnet.authKey }),
     },
-    ssh: {
-      enabled: parsed.ssh?.enabled ?? false,
-      port: parsed.ssh?.port ?? 22,
-    },
+    ssh: { enabled: parsed.ssh?.enabled ?? false },
     forceRelay: parsed.forceRelay ?? false,
     rotatePinnedPeerKey: parsed.rotatePinnedPeerKey ?? false,
     logLevel: parsed.logLevel ?? 'info',

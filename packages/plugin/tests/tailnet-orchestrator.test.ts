@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { TAILNET_LISTEN_PORT, publicUrlFor, tailnetRelayPort } from '../src/tailnet/orchestrator.js'
+import { SSH_LISTEN_PORT, TAILNET_LISTEN_PORT } from '../src/embedded-ports.js'
+import { publicUrlFor, tailnetRelayPort } from '../src/tailnet/orchestrator.js'
 
 // 回归：对外地址曾经随中继端口写成 http://名字:8080；节点改在 tailnet 的 80 端口监听后，
 // 地址必须保持无端口形式，否则客户端会连到中继端口而不是节点监听端口。
@@ -10,6 +11,11 @@ describe('tailnet 对外地址', () => {
 
   it('tailnet 监听端口是 http 默认端口', () => {
     expect(TAILNET_LISTEN_PORT).toBe(80)
+  })
+
+  // 回归：内嵌节点在用户态网络监听，端口不占用系统套接字，SSH 一直用标准端口 22。
+  it('SSH 监听端口是标准端口', () => {
+    expect(SSH_LISTEN_PORT).toBe(22)
   })
 })
 

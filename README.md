@@ -30,7 +30,7 @@ dsh plugin --profile desktop add dsh-remote-over-tailnet
 2. 打开「插件 → Remote Over Tailnet → 远程设置」，在「DSH Remote 本地中继服务」那一行右侧打开开关。
 3. 首次开启时，左下角「Remote Over Tailnet」入口的弹窗给出授权链接，在浏览器里点开并登录 tailnet 账号、同意加入；授权完成后弹窗里出现服务地址。
 4. 弹窗会显示 DSH Remote 服务器地址、账号与密码。在客户端中添加自定义服务器，填入这三项登录。
-5. 要在 DSH Go 里用 SSH 直连（不经过中继、也不经过第三方服务器），在同一个弹窗里打开「开启 SSH」，把「通用连接信息」里的地址、账号、密码，加上这一块的 SSH 端口与 DSH 登录令牌填进 DSH Go 的「添加 SSH 主机」，实例管理选「只连接」。这一步不要求「中继服务」开着，两套服务各自独立。详见 [SSH 直连](docs/ssh.md)。
+5. 要在 DSH Go 里用 SSH 直连（不经过中继、也不经过第三方服务器），在同一个弹窗的「SSH 服务」那一行右侧打开开关，把「通用连接信息」里的地址、账号、密码，加上 SSH 端口 22 与 DSH 登录令牌填进 DSH Go 的「添加 SSH 主机」，实例管理选「只连接」。这一步不要求「中继服务」开着，两套服务各自独立。详见 [SSH 直连](docs/ssh.md)。
 
 插件开启中继服务时会自动完成这些步骤，不需要命令行：
 
@@ -50,7 +50,6 @@ dsh plugin --profile desktop add dsh-remote-over-tailnet
 | `tailnet.authKey` | 空 | 可选的 tailnet 授权密钥，填了就跳过首次的浏览器授权 |
 | `tailnet.dataDirectory` | `$DSH_HOME/dsh-remote-over-tailnet/tailnet` | 账号密码、内嵌节点状态、relay.lock、relay.log 与中继 state.json 的存放目录，可改到其他磁盘 |
 | `ssh.enabled` | `false` | 在 tailnet 节点上再开一个 SSH 监听，只放行到当前 DSH Web 端口的隧道 |
-| `ssh.port` | `22` | SSH 监听端口，取值 1 到 65535 |
 
 身份目录按 `serverUrl` 的 origin 做哈希，改变中继端口等于更换 Host 身份，因此端口应保持稳定。
 

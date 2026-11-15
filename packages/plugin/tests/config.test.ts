@@ -21,11 +21,8 @@ describe('plugin config', () => {
 
   // SSH 模式默认关闭，避免没打算用的人多开一个监听；端口是 tailnet 内的虚拟端口，默认取 22 与 DSH Go 一致。
   it('keeps SSH off by default and validates its port when enabled', () => {
-    expect(resolveConfig({}).ssh).toEqual({ enabled: false, port: 22 })
-    expect(resolveConfig({ ssh: { enabled: true, port: 22 } }).ssh).toEqual({ enabled: true, port: 22 })
-    expect(resolveConfig({ ssh: { enabled: true, port: 2200 } }).ssh).toEqual({ enabled: true, port: 2200 })
-    expect(() => resolveConfig({ ssh: { enabled: true, port: 0 } })).toThrow()
-    expect(() => resolveConfig({ ssh: { enabled: true, port: 70_000 } })).toThrow()
+    expect(resolveConfig({}).ssh).toEqual({ enabled: false })
+    expect(resolveConfig({ ssh: { enabled: true } }).ssh).toEqual({ enabled: true })
   })
 
   it('rejects the removed Client-mode role and Remote Tools switches', () => {

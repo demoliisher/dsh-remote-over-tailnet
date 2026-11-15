@@ -2,6 +2,7 @@ import { renderBodyPortal } from './portal.js'
 import type { Translate } from '../client-locale.js'
 import type { StatusFeed } from '../status-stream.js'
 import { messageOf, startupErrorMessage } from './presentation.js'
+import { SSH_LISTEN_PORT } from '../embedded-ports.js'
 import type {
   ClientReact,
   PluginSettingsView,
@@ -91,9 +92,8 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     const [relaySecretVisible, setRelaySecretVisible] = React.useState(false)
     // 地址呈现方式：同一个节点既有 ts.net 域名也有 tailnet IPv4，两者同时可用。
     const [addressKind, setAddressKind] = React.useState<'domain' | 'ip'>('domain')
-    // SSH 模式的开关、端口与登录信息，与中继账号一样按需读取。
+    // SSH 服务的开关与登录信息，与中继账号一样按需读取。
     const [sshEnabled, setSshEnabled] = React.useState(false)
-    const [sshPortDraft, setSshPortDraft] = React.useState('22')
     const [sshBusy, setSshBusy] = React.useState(false)
     const [sshToken, setSshToken] = React.useState('')
     // Host 早于 SSH 模式时 settings.get 不返回 ssh 字段，面板要如实说明，不能留一个点不动的开关。
@@ -163,7 +163,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
       setRelayPasswordDraft(relayCredentials.password)
     }, [relayCredentials])
 
-    // 打开面板时读一次 SSH 配置，开关与端口以已保存的值为准。
+    // 打开面板时读一次 SSH 配置，开关以已保存的值为准。
     React.useEffect(() => {
       if (!open) return undefined
       let cancelled = false
@@ -172,7 +172,6 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
           if (cancelled) return
           setSshSupported(view.config.ssh !== undefined)
           setSshEnabled(view.config.ssh?.enabled ?? false)
-          setSshPortDraft(String(view.config.ssh?.port ?? 22))
         })
         .catch(() => undefined)
       return () => { cancelled = true }
@@ -277,19 +276,13 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
       }
     }
 
-    // 打开或改端口都由同一个端点完成，编排就地启停监听，不重启节点。
-    const saveSsh = async (enabled: boolean, port: string): Promise<void> => {
-      const parsed = Number(port)
-      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
-        setSshError(t('sshPortInvalid'))
-        return
-      }
+    // 开关走同一个端点，编排就地启停监听，不重启节点。
+    const saveSsh = async (enabled: boolean): Promise<void> => {
       setSshBusy(true)
       setSshError(undefined)
       try {
-        setStatus(await props.control<RemoteStatus>('ssh.set', { enabled, port: parsed }))
+        setStatus(await props.control<RemoteStatus>('ssh.set', { enabled }))
         setSshEnabled(enabled)
-        setSshPortDraft(String(parsed))
       } catch (reason) {
         setSshError(messageOf(reason, t))
       } finally {
@@ -352,57 +345,38 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
       React.createElement('path', { d: 'M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z' }),
       React.createElement('circle', { cx: 12, cy: 12, r: 3 }),
       revealed ? React.createElement('path', { d: 'M4 4l16 16' }) : null)
-    // SSH 接入：地址、账号与密码由上面的连接信息共用，这里只列 SSH 专有的两项。
+    // SSH 服务：地址、账号与密码由上面的连接信息共用，这里只列 SSH 专有的两项。
     const sshReady = tailnet?.ssh
+    const sshPorts = sshReady === undefined
+      ? t('sshPortSummary', { sshPort: String(SSH_LISTEN_PORT) })
+      : t('sshPortsSummary', { sshPort: String(sshReady.port), dshPort: String(sshReady.webPort) })
     const sshSection = React.createElement('section', {
       className: 'dshRemoteRelayAccess dshRemoteSshBlock',
       'aria-label': t('sshTitle'),
     },
       React.createElement('div', { className: 'dshRemoteRelayAccessHeading' },
         React.createElement('div', { className: 'dshRemoteSectionTitle' },
-          React.createElement('strong', null, t('sshTitle'))),
-        React.createElement('p', null, t('sshHint'))),
-      sshSupported
-        ? React.createElement(React.Fragment, null,
-          React.createElement('div', { className: 'dshRemoteAuthorizationSetting' },
-            React.createElement('div', null,
-              React.createElement('strong', null, t('sshEnable')),
-              React.createElement('p', null, t('sshEnableHint'))),
-            React.createElement('input', {
-              type: 'checkbox',
-              role: 'switch',
-              'aria-label': t('sshEnable'),
-              checked: sshEnabled,
-              disabled: sshBusy,
-              onChange: (event: Event) => void saveSsh((event.target as HTMLInputElement).checked, sshPortDraft),
-            })),
-          React.createElement('div', { className: 'dshRemoteRelayFields' },
-            React.createElement('label', null,
-              React.createElement('span', { className: 'dshRemoteRelayFieldLabel' }, t('sshPort')),
+          React.createElement('strong', null, t('sshTitle')),
+          sshSupported
+            ? React.createElement('span', { className: 'dshRemoteRelayHeadingControls' },
               React.createElement('input', {
-                type: 'number',
-                min: 1,
-                max: 65535,
-                value: sshPortDraft,
-                autoComplete: 'off',
-                onChange: (event: Event) => setSshPortDraft((event.target as HTMLInputElement).value),
-              })),
-            React.createElement('div', { className: 'dshRemoteRelayActions' },
-              React.createElement('button', {
-                type: 'button',
-                disabled: sshBusy || !sshEnabled || sshPortDraft === String(sshReady?.port ?? ''),
-                onClick: () => void saveSsh(sshEnabled, sshPortDraft),
-              }, t('sshApply')))),
-          sshEnabled && sshReady === undefined
-            ? React.createElement('p', { className: 'dshRemoteSettingsState' }, t('sshNotReady'))
-            : null)
-        : React.createElement('p', { className: 'dshRemoteSettingsState' }, t('sshNeedsRestart')),
+                type: 'checkbox',
+                role: 'switch',
+                className: 'dshRemoteRelaySwitch',
+                'aria-label': t('sshEnable'),
+                checked: sshEnabled,
+                disabled: sshBusy,
+                onChange: (event: Event) => void saveSsh((event.target as HTMLInputElement).checked),
+              }))
+            : null),
+        React.createElement('p', null, sshPorts)),
+      sshSupported ? null : React.createElement('p', { className: 'dshRemoteSettingsState' }, t('sshNeedsRestart')),
+      sshEnabled && sshReady === undefined && sshSupported
+        ? React.createElement('p', { className: 'dshRemoteSettingsState' }, t('sshNotReady'))
+        : null,
       sshError === undefined ? null : React.createElement('p', { className: 'dshRemoteSettingsState' }, sshError),
       sshReady === undefined ? null : React.createElement(React.Fragment, null,
         React.createElement('div', { className: 'dshRemoteRelayFields' },
-          React.createElement('label', { className: 'dshRemoteRelayFieldWide' },
-            React.createElement('span', { className: 'dshRemoteRelayFieldLabel' }, t('sshWebPort')),
-            React.createElement('input', { type: 'text', value: String(sshReady.webPort), readOnly: true })),
           React.createElement('label', { className: 'dshRemoteRelayFieldWide' },
             React.createElement('span', { className: 'dshRemoteRelayFieldLabel' }, t('sshToken')),
             React.createElement('input', { type: 'text', value: sshToken, readOnly: true })),
@@ -483,19 +457,8 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
         React.createElement('div', { className: 'dshRemoteRelayHeadingMain' },
           React.createElement('div', { className: 'dshRemoteSectionTitle' },
             React.createElement('strong', null, t('tailnetAccessTitle')),
-            // 开关与连接数紧贴标题右侧，下面不再单独占一块。
+            // 开关与连接数紧贴标题右侧，下面不再单独占一块；开关在左，连接数出现在它右边。
             React.createElement('span', { className: 'dshRemoteRelayHeadingControls' },
-              connectedClientCount === undefined
-                ? null
-                : React.createElement('span', {
-                  className: 'dshRemoteServiceCount',
-                  title: connectedClientCount === 0
-                    ? t('connectedClientsEmpty')
-                    : t('connectedClientCount', { count: connectedClientCount }),
-                  'aria-label': connectedClientCount === 0
-                    ? t('connectedClientsEmpty')
-                    : t('connectedClientCount', { count: connectedClientCount }),
-                }, String(connectedClientCount)),
               status?.serviceAvailable
                 ? React.createElement('input', {
                   type: 'checkbox',
@@ -506,7 +469,18 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
                   disabled: saving || serviceBusy,
                   onChange: (event: Event) => void setRemoteService((event.target as HTMLInputElement).checked),
                 })
-                : null)),
+                : null,
+              connectedClientCount === undefined
+                ? null
+                : React.createElement('span', {
+                  className: 'dshRemoteServiceCount',
+                  title: connectedClientCount === 0
+                    ? t('connectedClientsEmpty')
+                    : t('connectedClientCount', { count: connectedClientCount }),
+                  'aria-label': connectedClientCount === 0
+                    ? t('connectedClientsEmpty')
+                    : t('connectedClientCount', { count: connectedClientCount }),
+                }, String(connectedClientCount)))),
         React.createElement('p', null, t('relayHint'))),
       React.createElement('div', { className: 'dshRemoteRelayNameField' },
         React.createElement('span', { className: 'dshRemoteRelayFieldLabel' }, t('hostName')),

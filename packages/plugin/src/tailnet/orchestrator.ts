@@ -6,17 +6,10 @@ import type { TsnetNode, TsnetNodeStatus } from './embedded-node.js'
 import { connectEmbeddedNode } from './embedded-node.js'
 import { RelayError, relayLogPath, startRelay, type RelayHandle } from './relay.js'
 import { startSshServer, type SshServerHandle } from './ssh-server.js'
+import { SSH_LISTEN_PORT, TAILNET_LISTEN_PORT } from '../embedded-ports.js'
 
 /** 节点在 tailnet 里的固定名称，对外地址形如 http://dsh-remote.<tailnet>.ts.net。 */
 export const TAILNET_NODE_HOSTNAME = 'dsh-remote'
-
-/**
- * 节点在 tailnet 内的监听端口。
- *
- * 这是 http 默认端口，对外地址不必写端口；wasm 节点的监听发生在用户态网络实现里，
- * 不向系统申请套接字，因此与宿主机 80 端口被谁占用无关。
- */
-export const TAILNET_LISTEN_PORT = 80
 
 /** 面板上展示的单个步骤状态；ok 为 null 表示还没走到这一步。 */
 export interface TailnetStep {
@@ -72,7 +65,7 @@ export interface TailnetControl {
   saveCredentials(credentials: RelayCredentials): Promise<TailnetSnapshot | undefined>
   /** SSH 模式的登录信息；未启用或尚未就绪时为空。 */
   sshCredentials(): { username: string; password: string; port: number; token?: string } | undefined
-  /** 运行中修改 SSH 模式的开关与端口，不重启节点；失败抛出由控制层回报。 */
+  /** 运行中开关 SSH 服务，不重启节点；失败抛出由控制层回报。 */
   applySsh(ssh: ResolvedConfig['ssh']): Promise<TailnetSnapshot | undefined>
   /** 运行中修改「中继服务」开关：只起停中继，节点留给 SSH 模式继续用。 */
   applyService(enabled: boolean): Promise<TailnetSnapshot | undefined>
@@ -165,14 +158,14 @@ export class TailnetOrchestrator implements TailnetControl {
   }
 
   /**
-   * 面板改 SSH 开关或端口时就地生效。
+   * 面板开关 SSH 服务时就地生效。
    *
-   * 节点与中继不动，只关掉或换掉 SSH 监听；端口变化时先关旧监听再按新端口监听。
+   * 节点与中继不动，只关掉或打开 SSH 监听。
    * 主机密钥与账号密码都与 DSH Remote 共用，客户端已信任的指纹不会失效。
    */
   async applySsh(ssh: ResolvedConfig['ssh']): Promise<TailnetSnapshot | undefined> {
     const current = this.options.config.ssh
-    if (current.enabled === ssh.enabled && current.port === ssh.port) return this.snapshot()
+    if (current.enabled === ssh.enabled) return this.snapshot()
     this.options.config = { ...this.options.config, ssh }
     if (!ssh.enabled) {
       await this.stopSsh()
@@ -192,7 +185,6 @@ export class TailnetOrchestrator implements TailnetControl {
       await this.start()
       return this.snapshot()
     }
-    if (this.sshPort !== undefined && this.sshPort !== ssh.port) await this.closeSshStream()
     if (this.state?.phase === 'ready') await this.startSsh()
     return this.snapshot()
   }
@@ -236,7 +228,7 @@ export class TailnetOrchestrator implements TailnetControl {
     }
     // 账号密码由中继与 SSH 共用，任一服务在运行时都锁住，避免改到一半两条通道用上不同凭据。
     if (this.relay !== undefined || this.ssh !== undefined) {
-      throw new TailnetOrchestrationError('TAILNET_RUNNING', '请先停止中继服务与 SSH 接入，再修改账号密码。')
+      throw new TailnetOrchestrationError('TAILNET_RUNNING', '请先停止中继服务与 SSH 服务，再修改账号密码。')
     }
     const saved = await saveRelayCredentials(this.dataDirectory(), next)
     this.relayCredentials = saved
@@ -425,7 +417,7 @@ export class TailnetOrchestrator implements TailnetControl {
   /**
    * 只关掉中继这一套：停中继进程并关掉节点上的 80 端口监听，节点与 SSH 保持运行。
    *
-   * 「中继服务」和「SSH 接入」是两个独立模块，关掉一个不影响另一个用同一个节点。
+   * 「中继服务」和「SSH 服务」是两个独立模块，关掉一个不影响另一个用同一个节点。
    */
   private async stopRelay(): Promise<void> {
     const relay = this.relay
@@ -457,7 +449,7 @@ export class TailnetOrchestrator implements TailnetControl {
     return this.options.config.service.enabled !== false
   }
 
-  /** SSH 接入是否应该在运行。 */
+  /** SSH 服务是否应该在运行。 */
   private wantsSsh(): boolean {
     return this.options.config.ssh.enabled
   }
@@ -495,7 +487,7 @@ export class TailnetOrchestrator implements TailnetControl {
   }
 
   /**
-   * 起 SSH 服务，并在 tailnet 上单独监听一个端口。
+   * 起 SSH 服务，并在 tailnet 上监听固定端口。
    *
    * 端口上的每条连接都交给 ssh2 处理，认证通过后只允许 direct-tcpip 到当前 DSH Web 端口，
    * 因此这条通道能做的只有「替客户端打通到本机这个实例」。
@@ -519,13 +511,13 @@ export class TailnetOrchestrator implements TailnetControl {
       logger,
     })
     const handle = this.ssh
-    if (this.sshPort !== config.ssh.port) {
-      await node.listenStream(config.ssh.port, socket => handle.handleConnection(socket))
-      this.sshPort = config.ssh.port
+    if (this.sshPort !== SSH_LISTEN_PORT) {
+      await node.listenStream(SSH_LISTEN_PORT, socket => handle.handleConnection(socket))
+      this.sshPort = SSH_LISTEN_PORT
     }
     const webPort = this.options.webPort()
     if (webPort === undefined) throw new TailnetOrchestrationError('TAILNET_NO_WEB_PORT', '取不到当前 DSH Web 端口，SSH 模式无法确定转发目标。')
-    this.state.ssh = { port: config.ssh.port, fingerprint: handle.fingerprint, webPort }
+    this.state.ssh = { port: SSH_LISTEN_PORT, fingerprint: handle.fingerprint, webPort }
     this.publish()
   }
 

@@ -96,7 +96,7 @@ function read(channel: ClientChannel, expected: string): Promise<string> {
 }
 
 // 回归：DSH Go 的「只连接」只需要密码认证加一条 direct-tcpip 通道，通道之外什么都拿不到。
-describe('SSH 接入', () => {
+describe('SSH 服务', () => {
   it('密码认证后把 direct-tcpip 转发到本机 DSH 端口', async () => {
     const harness = await startHarness()
     const client = await connect(harness.bridgePort, ACCOUNT, PASSWORD)

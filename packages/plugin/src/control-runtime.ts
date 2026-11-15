@@ -179,17 +179,13 @@ export class PluginControlRuntime {
     return this.hostOnlyStatus()
   }
 
-  /** 面板上开关 SSH 模式或改端口；写入配置后由编排就地生效。 */
+  /** 面板上开关 SSH 服务；写入配置后由编排就地生效。 */
   private async setSsh(payload: unknown): Promise<Record<string, unknown>> {
     if (this.settings === undefined) throw new ControlError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
     const value = record(payload)
-    if (typeof value.enabled !== 'boolean') throw new ControlError('INVALID_MESSAGE', '需要提供 SSH 模式的开关状态。')
+    if (typeof value.enabled !== 'boolean') throw new ControlError('INVALID_MESSAGE', '需要提供 SSH 服务的开关状态。')
     const current = resolveConfig(this.settings.get())
-    const port = value.port === undefined ? current.ssh.port : value.port
-    if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535) {
-      throw new ControlError('INVALID_MESSAGE', 'SSH 端口需为 1 到 65535 之间的整数。')
-    }
-    const next = resolveConfig({ ...editableConfig(current), ssh: { enabled: value.enabled, port } })
+    const next = resolveConfig({ ...editableConfig(current), ssh: { enabled: value.enabled } })
     await this.settings.replace(editableConfig(next))
     this.config = next
     await this.tailnet?.applySsh(next.ssh)
