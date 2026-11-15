@@ -54,9 +54,10 @@ await buildBundle({
   // after it. The official Connection package stays external because the Host
   // composition must supply that one shared peer instance; `@roamhq/wrtc` stays
   // an optional native load.
-  // cpu-features 是 ssh2 的可选原生加速，ssh2 自己在 try/catch 里 require；它引用的 .node
-  // 既不在包里也无法跨机器通用，留在外部让运行时回退到纯 JS 实现。
-  external: ['@deepseek-ai/dsh-client-connection', '@roamhq/wrtc', 'cpu-features'],
+  // cpu-features 与 ssh2 自带的 sshcrypto.node 都是可选原生加速，ssh2 自己在 try/catch 里 require；
+  // .node 既不在包里也无法跨机器通用，留在外部让运行时回退到纯 JS 实现。esbuild 遇到 .node
+  // 没有对应 loader，而装了构建工具链的机器（例如 CI）会在安装时把它编译出来，必须一并排除。
+  external: ['@deepseek-ai/dsh-client-connection', '@roamhq/wrtc', 'cpu-features', '*.node'],
   // Inlined CommonJS dependencies require Node builtins lazily. A lexical
   // require keeps esbuild's __require working in pure ESM without a global shim.
   // 内联的 CommonJS 依赖（ssh2 自带的 browserify 化 crypto）还会直接读 __dirname，
