@@ -156,9 +156,9 @@ function createStreamSocket(id: number): Duplex {
 /** 一个进程只能 go.run 一次，节点启停复用同一个运行时。 */
 let runtimePromise: Promise<DshTsnetBridge> | undefined
 
-/** tsnet 资产目录：与 dist 同级，打包时随插件一起发布。 */
-function nodeAssets(packageRoot: string): { wasm: string; exec: string } {
-  return { wasm: join(packageRoot, 'tsnet', 'tsnet.wasm'), exec: join(packageRoot, 'tsnet', 'wasm_exec.js') }
+/** wasm 运行时资产：wasm 由扩展按需下载到数据目录，wasm_exec.js 仍随插件发布。 */
+function nodeAssets(packageRoot: string, wasmPath: string): { wasm: string; exec: string } {
+  return { wasm: wasmPath, exec: join(packageRoot, 'tsnet', 'wasm_exec.js') }
 }
 
 
@@ -188,6 +188,30 @@ function installFileSystem(): void {
     isFile: () => st.isFile(),
     isSocket: () => false,
   })
+  // wasm 节点入网前要解析控制平面域名。宿主（例如装了系统 Tailscale 的 WSL）会把
+  // /etc/resolv.conf 改写成只有入网后才可达的 MagicDNS，未入网时查询被 reset，最终启动超时。
+  // 给 wasm 一份公共 DNS 的虚拟 resolv.conf：DNS 解析走宿主网络，绕开这个先入网才能解析、
+  // 先解析才能入网的死循环。fd 取一个不会与真实文件描述符冲突的高位值。
+  const resolvFd = 0x7fff0000
+  const resolvData = Buffer.from('nameserver 223.5.5.5\nnameserver 119.29.29.29\n', 'utf8')
+  let resolvOffset = 0
+  const readResolv = (buf: Uint8Array, offset: number, length: number, position: number | null): number => {
+    const sequential = position === null || Number(position) < 0
+    const start = sequential ? resolvOffset : Number(position)
+    const end = Math.min(start + length, resolvData.length)
+    const count = end > start ? end - start : 0
+    if (count > 0) resolvData.copy(buf, offset, start, end)
+    if (sequential) resolvOffset += count
+    return count
+  }
+  const resolvStat = (): Record<string, unknown> => ({
+    dev: 0, ino: 0, mode: 0o100644, nlink: 1, uid: 0, gid: 0, rdev: 0,
+    size: resolvData.length, blksize: 4096, blocks: 1,
+    atimeMs: 0, mtimeMs: 0, ctimeMs: 0,
+    isDirectory: () => false, isFile: () => true, isSocket: () => false,
+  })
+  const isResolv = (path: string): boolean => path === '/etc/resolv.conf'
+
   globals.fs = {
     constants: {
       O_WRONLY: C.O_WRONLY,
@@ -199,6 +223,11 @@ function installFileSystem(): void {
       O_DIRECTORY: C.O_DIRECTORY ?? -1,
     },
     open(path: string, flags: string, mode: number, cb: (error: unknown, fd?: number) => void) {
+      if (isResolv(path)) {
+        resolvOffset = 0
+        cb(null, resolvFd)
+        return
+      }
       try {
         cb(null, fs.openSync(path, flags, mode))
       } catch (error) {
@@ -206,6 +235,10 @@ function installFileSystem(): void {
       }
     },
     close(fd: number, cb: (error: unknown) => void) {
+      if (fd === resolvFd) {
+        cb(null)
+        return
+      }
       try {
         fs.closeSync(fd)
         cb(null)
@@ -218,9 +251,14 @@ function installFileSystem(): void {
       return fs.writeSync(fd, buf)
     },
     readSync(fd: number, buf: Uint8Array, offset: number, length: number, position: number | null): number {
+      if (fd === resolvFd) return readResolv(buf, offset, length, position)
       return fs.readSync(fd, buf, offset, length, position === null ? null : Number(position))
     },
     read(fd: number, buf: Uint8Array, offset: number, length: number, position: number | null, cb: (error: unknown, n?: number) => void) {
+      if (fd === resolvFd) {
+        cb(null, readResolv(buf, offset, length, position))
+        return
+      }
       try {
         cb(null, fs.readSync(fd, buf, offset, length, position === null ? null : Number(position)))
       } catch (error) {
@@ -235,6 +273,10 @@ function installFileSystem(): void {
       }
     },
     fstat(fd: number, cb: (error: unknown, st?: Record<string, unknown>) => void) {
+      if (fd === resolvFd) {
+        cb(null, resolvStat())
+        return
+      }
       try {
         cb(null, statObject(fs.fstatSync(fd)))
       } catch (error) {
@@ -242,6 +284,10 @@ function installFileSystem(): void {
       }
     },
     stat(path: string, cb: (error: unknown, st?: Record<string, unknown>) => void) {
+      if (isResolv(path)) {
+        cb(null, resolvStat())
+        return
+      }
       try {
         cb(null, statObject(fs.statSync(path)))
       } catch (error) {
@@ -444,8 +490,8 @@ function installNetBridge(): void {
 }
 
 /** 加载并启动 Go 运行时，返回注册在 globalThis 上的桥对象。 */
-async function loadRuntime(packageRoot: string): Promise<DshTsnetBridge> {
-  const assets = nodeAssets(packageRoot)
+async function loadRuntime(packageRoot: string, wasmPath: string): Promise<DshTsnetBridge> {
+  const assets = nodeAssets(packageRoot, wasmPath)
   installFileSystem()
   installNetBridge()
   if (globals.Go === undefined) {
@@ -469,8 +515,8 @@ async function loadRuntime(packageRoot: string): Promise<DshTsnetBridge> {
 }
 
 /** 取回（必要时启动）进程内唯一的节点运行时。 */
-function getRuntime(packageRoot: string): Promise<DshTsnetBridge> {
-  runtimePromise ??= loadRuntime(packageRoot)
+function getRuntime(packageRoot: string, wasmPath: string): Promise<DshTsnetBridge> {
+  runtimePromise ??= loadRuntime(packageRoot, wasmPath)
   return runtimePromise
 }
 
@@ -480,8 +526,8 @@ function getRuntime(packageRoot: string): Promise<DshTsnetBridge> {
  * 节点运行在插件的 Node 进程里：WASM 版 tsnet 提供 WireGuard 与 netstack，
  * 入站连接经由主桥接对象转发到本机中继端口，因此整套链路不依赖系统安装的 Tailscale 客户端。
  */
-export async function connectEmbeddedNode(packageRoot: string): Promise<TsnetNode> {
-  const bridge = await getRuntime(packageRoot)
+export async function connectEmbeddedNode(packageRoot: string, wasmPath: string): Promise<TsnetNode> {
+  const bridge = await getRuntime(packageRoot, wasmPath)
   const fail = (value: string | null | undefined): string => String(value ?? '内嵌节点操作失败')
   return {
     async start(options) {

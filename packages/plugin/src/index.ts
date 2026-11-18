@@ -333,7 +333,7 @@ async function activate(
       logger.error('Remote plugin startup failed', safeStartupError(initialStorageError))
     } else {
       try {
-        if (config.service.enabled === false && config.ssh.enabled === false) {
+        if (config.tailnet.enabled === false) {
           await runtime!.start()
           await tailnet?.stop()
         } else {

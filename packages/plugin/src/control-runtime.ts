@@ -115,6 +115,12 @@ export class PluginControlRuntime {
       if (endpoint === 'tailnet.credentials') return ok(this.credentials())
       if (endpoint === 'tailnet.ssh.credentials') return ok(this.sshCredentials())
       if (endpoint === 'ssh.set') return this.withTailnet(ok(await this.setSsh(payload)))
+      if (endpoint === 'ssh.pin') return this.withTailnet(ok(await this.setSshPin(payload)))
+      if (endpoint === 'tailnet.set') return this.withTailnet(ok(await this.setTailnet(payload)))
+      if (endpoint === 'tailnet.mode.set') return this.withTailnet(ok(await this.setMode(payload)))
+      if (endpoint === 'tailnet.system.refresh') return this.withTailnet(ok(await this.refreshSystem()))
+      if (endpoint === 'tailnet.extension.download') return this.withTailnet(ok(await this.downloadExtension()))
+      if (endpoint === 'tailnet.extension.remove') return this.withTailnet(ok(await this.removeExtension()))
       if (endpoint === 'tailnet.credentials.save') return ok(await this.saveCredentials(payload))
       if (endpoint === 'status') {
         if (this.startupFailure !== undefined) {
@@ -146,6 +152,59 @@ export class PluginControlRuntime {
     return credentials
   }
 
+  /** 切换组网模式；写入配置后由编排停掉旧后端再按新模式启动。 */
+  private async setMode(payload: unknown): Promise<Record<string, unknown>> {
+    if (this.settings === undefined) throw new ControlError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
+    const value = record(payload)
+    if (value.mode !== 'system' && value.mode !== 'embedded') throw new ControlError('INVALID_MESSAGE', '需要提供有效的组网模式。')
+    const current = resolveConfig(this.settings.get())
+    const next = resolveConfig({ ...editableConfig(current), tailnet: { ...current.tailnet, mode: value.mode } })
+    await this.settings.replace(editableConfig(next))
+    this.config = next
+    if (this.tailnet !== undefined) await this.tailnet.applyMode(value.mode)
+    return this.hostOnlyStatus()
+  }
+
+  /** 重新探测系统客户端状态。 */
+  private async refreshSystem(): Promise<Record<string, unknown>> {
+    if (this.tailnet === undefined) throw new ControlError('METHOD_NOT_ALLOWED', '组网未启用。')
+    await this.tailnet.refreshSystem()
+    return this.hostOnlyStatus()
+  }
+
+  /** 下载 wasm 扩展组件。 */
+  private async downloadExtension(): Promise<Record<string, unknown>> {
+    if (this.tailnet === undefined) throw new ControlError('METHOD_NOT_ALLOWED', '组网未启用。')
+    await this.tailnet.downloadExtension()
+    return this.hostOnlyStatus()
+  }
+
+  /** 删除 wasm 扩展组件。 */
+  private async removeExtension(): Promise<Record<string, unknown>> {
+    if (this.tailnet === undefined) throw new ControlError('METHOD_NOT_ALLOWED', '组网未启用。')
+    await this.tailnet.removeExtension()
+    return this.hostOnlyStatus()
+  }
+  /**
+   * 切换内嵌节点开关。节点是中继与 SSH 共用的底座，关闭时两者都无法运行。
+   */
+  private async setTailnet(payload: unknown): Promise<Record<string, unknown>> {
+    if (this.settings === undefined) throw new ControlError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
+    const value = record(payload)
+    if (typeof value.enabled !== 'boolean') throw new ControlError('INVALID_MESSAGE', '需要提供内嵌节点的开关状态。')
+    const current = resolveConfig(this.settings.get())
+    if (!value.enabled && (current.service.enabled !== false || current.ssh.enabled)) {
+      throw new ControlError('TAILNET_IN_USE', '请先关闭中继服务与 SSH 服务，再关闭内嵌节点。')
+    }
+    const next = resolveConfig({ ...editableConfig(current), tailnet: { ...current.tailnet, enabled: value.enabled } })
+    await this.settings.replace(editableConfig(next))
+    this.config = next
+    if (this.tailnet === undefined) return this.hostOnlyStatus()
+    if (value.enabled) await this.tailnet.start()
+    else await this.tailnet.stop()
+    return this.hostOnlyStatus()
+  }
+
   /**
    * 「中继服务」总开关：打开时先启动内嵌节点与本地中继，节点仍在等 Tailscale 授权时
    * 只打开开关、由编排在就绪回调里完成 Host 授权与连接；关闭时先断开 Host 连接，再停止中继与节点。
@@ -153,6 +212,9 @@ export class PluginControlRuntime {
   private async setService(payload: unknown): Promise<Record<string, unknown>> {
     const value = record(payload)
     if (typeof value.enabled !== 'boolean') throw new ControlError('INVALID_MESSAGE', '需要提供中继服务的开关状态。')
+    if (value.enabled && this.config.tailnet.enabled === false) {
+      throw new ControlError('TAILNET_DISABLED', '请先打开内嵌节点，再开启中继服务。')
+    }
     await this.persistService(value.enabled)
     if (!value.enabled) {
       await this.host?.setHostControl(false)
@@ -184,11 +246,47 @@ export class PluginControlRuntime {
     if (this.settings === undefined) throw new ControlError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
     const value = record(payload)
     if (typeof value.enabled !== 'boolean') throw new ControlError('INVALID_MESSAGE', '需要提供 SSH 服务的开关状态。')
+    if (value.enabled && this.config.tailnet.enabled === false) {
+      throw new ControlError('TAILNET_DISABLED', '请先打开内嵌节点，再开启 SSH 服务。')
+    }
     const current = resolveConfig(this.settings.get())
-    const next = resolveConfig({ ...editableConfig(current), ssh: { enabled: value.enabled } })
+    // 开关只改 enabled；固定值照旧保留，固定端口不会因为关一次 SSH 就丢。
+    const pinnedPort = current.ssh.pinnedPort
+    const next = resolveConfig({
+      ...editableConfig(current),
+      ssh: pinnedPort === undefined
+        ? { enabled: value.enabled }
+        : { enabled: value.enabled, pinnedPort },
+    })
     await this.settings.replace(editableConfig(next))
     this.config = next
     await this.tailnet?.applySsh(next.ssh)
+    return this.hostOnlyStatus()
+  }
+
+  /**
+   * 面板上固定端口；已固定时点击解绑，撤掉记录与回环代理。
+   *
+   * 客户端只认这个端口，实例换端口后由编排在本机回环上做反向代理。
+   */
+  private async setSshPin(payload: unknown): Promise<Record<string, unknown>> {
+    if (this.settings === undefined) throw new ControlError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
+    const value = record(payload)
+    if (typeof value.pinned !== 'boolean') throw new ControlError('INVALID_MESSAGE', '需要提供固定端口的操作。')
+    const current = resolveConfig(this.settings.get())
+    const target = value.pinned ? this.tailnet?.snapshot()?.webPort : undefined
+    if (value.pinned && target === undefined) {
+      throw new ControlError('TAILNET_NO_WEB_PORT', '取不到当前 DSH Web 端口，请等待内嵌节点启动完成后再固定端口。')
+    }
+    const next = resolveConfig({
+      ...editableConfig(current),
+      ssh: target === undefined
+        ? { enabled: current.ssh.enabled }
+        : { enabled: current.ssh.enabled, pinnedPort: target },
+    })
+    await this.settings.replace(editableConfig(next))
+    this.config = next
+    await this.tailnet?.applyPin(value.pinned)
     return this.hostOnlyStatus()
   }
 
@@ -314,6 +412,7 @@ function editableConfig(config: ResolvedConfig): Config {
     loopback: config.loopback,
     tailnet: {
       enabled: config.tailnet.enabled,
+      mode: config.tailnet.mode,
       ...(config.tailnet.dataDirectory === undefined ? {} : { dataDirectory: config.tailnet.dataDirectory }),
       ...(config.tailnet.authKey === undefined ? {} : { authKey: config.tailnet.authKey }),
     },

@@ -112,6 +112,7 @@ describe('Cordis plugin lifecycle', () => {
       ...disabledAgentDomains,
       serverUrl: 'https://relay.example.test',
       service: { enabled: false },
+      tailnet: { enabled: false },
       deviceName: 'Cordis host control host',
     })
     const call = (endpoint: string, payload: unknown = {}) => fixture.handler!(endpoint, payload, new AbortController().signal)
@@ -120,7 +121,7 @@ describe('Cordis plugin lifecycle', () => {
       await vi.waitFor(async () => {
         await expect(call('status')).resolves.toMatchObject({
           ok: true,
-          value: { tailnet: { enabled: false, phase: 'disabled', steps: { authorize: { detail: '中继服务已关闭。' } } } },
+          value: { tailnet: { enabled: false, phase: 'disabled', steps: { authorize: { detail: '节点已关闭。' } } } },
         })
       })
       expect(ctx.dshRemote.hostStatus()).toMatchObject({ enabled: false })

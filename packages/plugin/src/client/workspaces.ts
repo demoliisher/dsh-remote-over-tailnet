@@ -2,7 +2,7 @@ import { renderBodyPortal } from './portal.js'
 import type { Translate } from '../client-locale.js'
 import type { StatusFeed } from '../status-stream.js'
 import { messageOf, startupErrorMessage } from './presentation.js'
-import { SSH_LISTEN_PORT } from '../embedded-ports.js'
+import { SSH_LISTEN_PORT, SYSTEM_SSH_PORT } from '../embedded-ports.js'
 import type {
   ClientReact,
   PluginSettingsView,
@@ -84,6 +84,12 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     const [status, setStatus] = React.useState<RemoteStatus | undefined>(undefined)
     const [saving, setSaving] = React.useState(false)
     const [serviceBusy, setServiceBusy] = React.useState(false)
+    const [tailnetEnabled, setTailnetEnabled] = React.useState(true)
+    const [tailnetBusy, setTailnetBusy] = React.useState(false)
+    // 组网模式与系统客户端、扩展下载状态；模式切换与各端点都走控制接口。
+    const [networkMode, setNetworkMode] = React.useState<'system' | 'embedded'>('system')
+    const [modeBusy, setModeBusy] = React.useState(false)
+    const [extensionBusy, setExtensionBusy] = React.useState(false)
     const [refreshing, setRefreshing] = React.useState(false)
     // 中继账号密码按需读取：状态推送里不带密码，面板打开时才向 Host 要。
     const [relayCredentials, setRelayCredentials] = React.useState<TailnetCredentialsView | undefined>(undefined)
@@ -99,6 +105,8 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
     // Host 早于 SSH 模式时 settings.get 不返回 ssh 字段，面板要如实说明，不能留一个点不动的开关。
     const [sshSupported, setSshSupported] = React.useState(true)
     const [sshError, setSshError] = React.useState<string | undefined>(undefined)
+    // 已固定的端口记在配置里；SSH 未监听时用这份记录继续显示原来的数值。
+    const [sshPinnedSavedPort, setSshPinnedSavedPort] = React.useState<number | undefined>(undefined)
     const [savedSection, setSavedSection] = React.useState<'connection' | 'relay' | undefined>(undefined)
     const [deviceNameDraft, setDeviceNameDraft] = React.useState('')
     const pageRef = React.useRef<HTMLElement | null>(null)
@@ -172,6 +180,9 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
           if (cancelled) return
           setSshSupported(view.config.ssh !== undefined)
           setSshEnabled(view.config.ssh?.enabled ?? false)
+          setSshPinnedSavedPort(view.config.ssh?.pinnedPort)
+          setTailnetEnabled(view.config.tailnet?.enabled ?? true)
+          setNetworkMode(view.config.tailnet?.mode ?? 'system')
         })
         .catch(() => undefined)
       return () => { cancelled = true }
@@ -264,6 +275,159 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
       }
     }
 
+    const switchMode = async (mode: 'system' | 'embedded'): Promise<void> => {
+      if (mode === networkMode) return
+      setModeBusy(true)
+      setError(undefined)
+      try {
+        setStatus(await props.control<RemoteStatus>('tailnet.mode.set', { mode }))
+        setNetworkMode(mode)
+      } catch (reason) {
+        setError(messageOf(reason, t))
+      } finally {
+        setModeBusy(false)
+      }
+    }
+
+    const refreshSystem = async (): Promise<void> => {
+      setModeBusy(true)
+      setError(undefined)
+      try {
+        setStatus(await props.control<RemoteStatus>('tailnet.system.refresh'))
+      } catch (reason) {
+        setError(messageOf(reason, t))
+      } finally {
+        setModeBusy(false)
+      }
+    }
+
+    const downloadComponent = async (): Promise<void> => {
+      setExtensionBusy(true)
+      setError(undefined)
+      try {
+        setStatus(await props.control<RemoteStatus>('tailnet.extension.download'))
+      } catch (reason) {
+        setError(messageOf(reason, t))
+      } finally {
+        setExtensionBusy(false)
+      }
+    }
+
+    const removeComponent = async (): Promise<void> => {
+      setExtensionBusy(true)
+      setError(undefined)
+      try {
+        setStatus(await props.control<RemoteStatus>('tailnet.extension.remove'))
+      } catch (reason) {
+        setError(messageOf(reason, t))
+      } finally {
+        setExtensionBusy(false)
+      }
+    }
+    // 组网模式区块：系统/内嵌切换、系统客户端状态、扩展下载、对外端口。
+    const tail = status?.tailnet
+    const activeMode = tail?.mode ?? networkMode
+    const extension = tail?.extension
+    const systemInfo = tail?.system
+    const extensionInstalled = extension?.state === 'installed'
+    const systemStateLabel = systemInfo === undefined ? undefined
+      : systemInfo.state === 'running' ? t('systemRunning')
+        : systemInfo.state === 'not-logged-in' ? t('systemNotLoggedIn')
+          : systemInfo.state === 'not-installed' ? t('systemNotInstalled') : t('systemStopped')
+    const modeChoices = [
+      { value: 'system' as const, label: t('modeSystem') },
+      { value: 'embedded' as const, label: t('modeEmbedded') },
+    ]
+    const modeButtons = React.createElement('div', {
+      className: 'dshRemoteEntryStyleChoices', role: 'radiogroup', 'aria-label': t('networkMode'),
+    }, modeChoices.map(choice => React.createElement('button', {
+      key: choice.value, type: 'button', role: 'radio',
+      'aria-checked': activeMode === choice.value,
+      className: activeMode === choice.value ? 'isSelected' : undefined,
+      disabled: modeBusy || tailnetBusy || serviceEnabled === true || sshEnabled
+        || (choice.value === 'embedded' && !extensionInstalled),
+      title: choice.value === 'embedded' && !extensionInstalled ? t('extensionAbsent') : undefined,
+      onClick: () => void switchMode(choice.value),
+    }, choice.label)))
+    const systemChildren: unknown[] = [
+      React.createElement('div', { className: 'dshRemoteRelayFields' },
+        React.createElement('label', { className: 'dshRemoteRelayFieldWide' },
+          React.createElement('span', { className: 'dshRemoteRelayFieldLabel' }, t('systemStatus')),
+          React.createElement('input', { type: 'text', value: systemStateLabel ?? '', readOnly: true })),
+        systemInfo?.dnsName === undefined ? null : React.createElement('label', { className: 'dshRemoteRelayFieldWide' },
+          React.createElement('span', { className: 'dshRemoteRelayFieldLabel' }, t('connectionAddressDomain')),
+          React.createElement('input', { type: 'text', value: systemInfo.dnsName, readOnly: true }))),
+      systemInfo?.state === 'not-logged-in'
+        ? React.createElement('p', { className: 'dshRemoteSettingsState' }, t('systemLoginHint'),
+          systemInfo.authUrl === undefined ? null : React.createElement('a', {
+            href: systemInfo.authUrl, target: '_blank', rel: 'noreferrer',
+          }, t('openInBrowser')))
+        : systemInfo?.state === 'not-installed' || systemInfo?.state === 'stopped'
+          ? React.createElement('p', { className: 'dshRemoteSettingsState' }, t('systemInstallHint'))
+          : systemInfo?.detail === undefined ? null
+            : React.createElement('p', { className: 'dshRemoteSettingsState' }, t('systemDetail') + '：' + systemInfo.detail),
+      React.createElement('button', {
+        type: 'button', className: 'dshRemotePageRefresh', disabled: modeBusy,
+        onClick: () => void refreshSystem(),
+      }, t(modeBusy ? 'extensionBusy' : 'refreshSystem')),
+    ]
+    const systemBlock = activeMode === 'system' && systemStateLabel !== undefined
+      ? React.createElement('div', { className: 'dshRemoteSystemStatus' }, systemChildren)
+      : null
+    const extensionValue = extension === undefined ? ''
+      : extension.state === 'installed' ? t('extensionInstalled', { size: String(extension.size ?? '') })
+        : extension.state === 'downloading' ? t('extensionDownloading', { progress: String(extension.progress ?? 0) })
+          : extension.state === 'error' ? t('extensionError', { message: extension.error ?? '' })
+            : t('extensionAbsent')
+    const extensionButton = extension?.state === 'installed'
+      ? React.createElement('button', {
+        type: 'button', disabled: extensionBusy || serviceEnabled === true || sshEnabled,
+        onClick: () => void removeComponent(),
+      }, t(extensionBusy ? 'extensionBusy' : 'extensionRemove'))
+      : React.createElement('button', {
+        type: 'button', disabled: extensionBusy || extension?.state === 'downloading',
+        onClick: () => void downloadComponent(),
+      }, t(extensionBusy ? 'extensionBusy' : 'extensionDownload'))
+    const extensionBlock = React.createElement('div', { className: 'dshRemoteExtension' },
+      React.createElement('div', { className: 'dshRemoteRelayFields' },
+        React.createElement('label', { className: 'dshRemoteRelayFieldWide' },
+          React.createElement('span', { className: 'dshRemoteRelayFieldLabel' }, t('extensionTitle')),
+          React.createElement('input', { type: 'text', readOnly: true, value: extensionValue }))),
+      extension?.state === 'error' ? React.createElement('p', { className: 'dshRemoteError' }, extension.error) : null,
+      React.createElement('p', { className: 'dshRemoteSettingsState' }, t('extensionRawOnly')),
+      React.createElement('div', { className: 'dshRemoteRelayActions' }, extensionButton))
+    const portBlock = tail?.phase === 'ready' && tail.publicPort !== undefined
+      ? React.createElement('p', { className: 'dshRemoteSettingsState' },
+        t('relayPortLabel') + '：' + String(tail.publicPort) + '　'
+        + t('sshPortLabel') + '：' + String(tail.ssh?.port ?? (activeMode === 'system' ? 2222 : 22)))
+      : null
+    const modeSection = React.createElement('section', {
+      className: 'dshRemoteRelayAccess dshRemoteModeSection',
+      'aria-label': t('networkMode'),
+    },
+      React.createElement('div', { className: 'dshRemoteRelayAccessHeading' },
+        React.createElement('div', { className: 'dshRemoteSectionTitle' },
+          React.createElement('strong', null, t('networkMode'))),
+        React.createElement('p', null, t('networkModeHint'))),
+      modeButtons,
+      systemBlock,
+      extensionBlock,
+      portBlock)
+
+    // 内嵌节点是中继与 SSH 共用的底座；关节点前要先关掉两个下游服务。
+    const setTailnet = async (enabled: boolean): Promise<void> => {
+      setTailnetBusy(true)
+      setError(undefined)
+      try {
+        setStatus(await props.control<RemoteStatus>('tailnet.set', { enabled }))
+        setTailnetEnabled(enabled)
+      } catch (reason) {
+        setError(messageOf(reason, t))
+      } finally {
+        setTailnetBusy(false)
+      }
+    }
+
     const setRemoteService = async (enabled: boolean): Promise<void> => {
       setServiceBusy(true)
       setError(undefined)
@@ -283,6 +447,21 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
       try {
         setStatus(await props.control<RemoteStatus>('ssh.set', { enabled }))
         setSshEnabled(enabled)
+      } catch (reason) {
+        setSshError(messageOf(reason, t))
+      } finally {
+        setSshBusy(false)
+      }
+    }
+
+    // 固定时记录当前实例端口；已固定时点击解绑，恢复跟随当前实例。
+    const setSshPinned = async (pinned: boolean): Promise<void> => {
+      setSshBusy(true)
+      setSshError(undefined)
+      try {
+        const next = await props.control<RemoteStatus>('ssh.pin', { pinned })
+        setStatus(next)
+        setSshPinnedSavedPort(next.tailnet?.ssh?.pinnedPort)
       } catch (reason) {
         setSshError(messageOf(reason, t))
       } finally {
@@ -347,29 +526,49 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
       revealed ? React.createElement('path', { d: 'M4 4l16 16' }) : null)
     // SSH 服务：地址、账号与密码由上面的连接信息共用，这里只列 SSH 专有的两项。
     const sshReady = tailnet?.ssh
-    const sshPorts = sshReady === undefined
-      ? t('sshPortSummary', { sshPort: String(SSH_LISTEN_PORT) })
-      : t('sshPortsSummary', { sshPort: String(sshReady.port), dshPort: String(sshReady.webPort) })
+    // 面板显示客户端要填的端口：固定之后一直是固定值，没固定时跟着当前实例走。
+    const sshPinnedPort = sshReady?.pinnedPort ?? sshPinnedSavedPort
+    const sshDshPort = sshPinnedPort ?? tailnet?.webPort
+    const sshPinned = sshPinnedPort !== undefined
     const sshSection = React.createElement('section', {
       className: 'dshRemoteRelayAccess dshRemoteSshBlock',
       'aria-label': t('sshTitle'),
     },
-      React.createElement('div', { className: 'dshRemoteRelayAccessHeading' },
-        React.createElement('div', { className: 'dshRemoteSectionTitle' },
-          React.createElement('strong', null, t('sshTitle')),
+      React.createElement('div', { className: 'dshRemoteRelayAccessHeading dshRemoteRelayHeading' },
+        React.createElement('div', { className: 'dshRemoteRelayHeadingMain' },
+          React.createElement('div', { className: 'dshRemoteSectionTitle' },
+            React.createElement('strong', null, t('sshTitle')),
+            sshSupported
+              ? React.createElement('span', { className: 'dshRemoteRelayHeadingControls' },
+                React.createElement('input', {
+                  type: 'checkbox',
+                  role: 'switch',
+                  className: 'dshRemoteRelaySwitch',
+                  'aria-label': t('sshEnable'),
+                  checked: sshEnabled,
+                  disabled: sshBusy || tailnetBusy || !tailnetEnabled,
+                  onChange: (event: Event) => void saveSsh((event.target as HTMLInputElement).checked),
+                }))
+              : null),
+          React.createElement('p', null, t('sshPortSummary', { sshPort: String(tailnet?.ssh?.port ?? (activeMode === 'system' ? SYSTEM_SSH_PORT : SSH_LISTEN_PORT)) }))),
+        React.createElement('div', { className: 'dshRemoteRelayNameField' },
+          React.createElement('span', null, t('sshDshPort')),
+          React.createElement('input', {
+            type: 'text',
+            value: sshDshPort === undefined ? '' : String(sshDshPort),
+            readOnly: true,
+            'aria-label': t('sshDshPort'),
+            placeholder: '-',
+          }),
           sshSupported
-            ? React.createElement('span', { className: 'dshRemoteRelayHeadingControls' },
-              React.createElement('input', {
-                type: 'checkbox',
-                role: 'switch',
-                className: 'dshRemoteRelaySwitch',
-                'aria-label': t('sshEnable'),
-                checked: sshEnabled,
-                disabled: sshBusy,
-                onChange: (event: Event) => void saveSsh((event.target as HTMLInputElement).checked),
-              }))
-            : null),
-        React.createElement('p', null, sshPorts)),
+            ? React.createElement('button', {
+              type: 'button',
+              title: t('sshPinHint'),
+              onClick: () => void setSshPinned(!sshPinned),
+              // 解绑不需要 SSH 在跑；只有固定新端口才要求服务已经就绪。
+              disabled: sshBusy || tailnetBusy || (!sshPinned && (!sshEnabled || sshReady === undefined)),
+            }, sshPinned ? t('sshPinned') : t('sshPin'))
+            : null)),
       sshSupported ? null : React.createElement('p', { className: 'dshRemoteSettingsState' }, t('sshNeedsRestart')),
       sshEnabled && sshReady === undefined && sshSupported
         ? React.createElement('p', { className: 'dshRemoteSettingsState' }, t('sshNotReady'))
@@ -449,6 +648,26 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
           }, t(saving ? 'saving' : 'tailnetSave')))))
 
     // 中继专有设置：开关与连接数在标题行，本机名称在同一行右侧。
+    // Tailnet 组网总开关：中继与 SSH 都挂在它下面，必须先打开组网。
+    const tailnetSection = React.createElement('section', {
+      className: 'dshRemoteRelayAccess dshRemoteTailnetSection',
+      'aria-label': t('tailnetEnable'),
+    },
+      React.createElement('div', { className: 'dshRemoteRelayAccessHeading' },
+        React.createElement('div', { className: 'dshRemoteSectionTitle' },
+          React.createElement('strong', null, t('tailnetEnable')),
+          React.createElement('span', { className: 'dshRemoteRelayHeadingControls' },
+            React.createElement('input', {
+              type: 'checkbox',
+              role: 'switch',
+              className: 'dshRemoteRelaySwitch',
+              'aria-label': t('tailnetEnable'),
+              checked: tailnetEnabled,
+              disabled: tailnetBusy || serviceEnabled === true || sshEnabled,
+              onChange: (event: Event) => void setTailnet((event.target as HTMLInputElement).checked),
+            }))),
+        React.createElement('p', null, t('tailnetEnableHint'))))
+
     const relayAccessPanel = React.createElement('section', {
       className: 'dshRemoteRelayAccess',
       'aria-label': t('tailnetAccessTitle'),
@@ -466,7 +685,7 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
                   className: 'dshRemoteRelaySwitch',
                   'aria-label': t('remoteService'),
                   checked: status?.host?.enabled === true,
-                  disabled: saving || serviceBusy,
+                  disabled: saving || serviceBusy || tailnetBusy || !tailnetEnabled,
                   onChange: (event: Event) => void setRemoteService((event.target as HTMLInputElement).checked),
                 })
                 : null,
@@ -565,6 +784,8 @@ export function createRemoteWorkspaceAction(React: ClientReact, portal?: PortalR
           React.createElement('main', { className: 'dshRemotePageBody' },
             errorNotice,
             connectionPanel,
+            modeSection,
+            tailnetSection,
             relayAccessPanel,
             sshSection),
           React.createElement('footer', { className: 'dshRemotePageFooter' },

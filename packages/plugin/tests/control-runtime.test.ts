@@ -68,7 +68,7 @@ describe('PluginControlRuntime settings', () => {
         config: {
           enabled: true,
           serverUrl: 'https://relay.example.test',
-          service: { enabled: true },
+          service: { enabled: false },
           codex: { enabled: false, binary: 'codex' },
           tailnet: { enabled: true },
         },
@@ -155,6 +155,85 @@ describe('PluginControlRuntime device name', () => {
   })
 })
 
+describe('PluginControlRuntime embedded tailnet node', () => {
+  it('persists the node switch and starts or stops the orchestrator', async () => {
+    const settings = settingsBinding({ serverUrl: 'http://127.0.0.1:8080', service: { enabled: false } })
+    const tailnet = tailnetStub({ snapshot: tailnetSnapshot() })
+    const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, hostStub(), tailnet))
+
+    await expect(handler('tailnet.set', { enabled: false }, signal())).resolves.toMatchObject({ ok: true })
+    expect(settings.get().tailnet).toEqual({ enabled: false, mode: 'system' })
+    expect(tailnet.stop).toHaveBeenCalledTimes(1)
+
+    await expect(handler('tailnet.set', { enabled: true }, signal())).resolves.toMatchObject({ ok: true })
+    expect(settings.get().tailnet).toEqual({ enabled: true, mode: 'system' })
+    expect(tailnet.start).toHaveBeenCalledTimes(1)
+
+    await expect(handler('tailnet.set', { enabled: 'false' }, signal()))
+      .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'INVALID_MESSAGE' } } })
+  })
+
+  it('refuses to turn the node off while the relay or SSH service is on', async () => {
+    const settings = settingsBinding({ serverUrl: 'http://127.0.0.1:8080', service: { enabled: true }, ssh: { enabled: false } })
+    const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, hostStub(), tailnetStub({ snapshot: tailnetSnapshot() })))
+
+    await expect(handler('tailnet.set', { enabled: false }, signal()))
+      .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'TAILNET_IN_USE' } } })
+    expect(settings.get().tailnet).toBeUndefined()
+  })
+})
+
+describe('PluginControlRuntime ssh access', () => {
+  it('records the current DSH web port when the panel pins it', async () => {
+    const settings = settingsBinding({ serverUrl: 'http://127.0.0.1:8080', ssh: { enabled: true } })
+    const tailnet = tailnetStub({
+      snapshot: tailnetSnapshot({ webPort: 51234, ssh: { port: 2222, fingerprint: 'SHA256:test', webPort: 51234 } }),
+    })
+    const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, hostStub(), tailnet))
+
+    await expect(handler('ssh.pin', { pinned: true }, signal())).resolves.toMatchObject({ ok: true })
+    expect(tailnet.applyPin).toHaveBeenCalledWith(true)
+    expect(settings.get().ssh).toEqual({ enabled: true, pinnedPort: 51234 })
+  })
+
+  it('clears the pinned port when the panel unbinds it', async () => {
+    const settings = settingsBinding({ serverUrl: 'http://127.0.0.1:8080', ssh: { enabled: true, pinnedPort: 51234 } })
+    const tailnet = tailnetStub({
+      snapshot: tailnetSnapshot({ webPort: 51234, ssh: { port: 2222, fingerprint: 'SHA256:test', webPort: 51234, pinnedPort: 51234 } }),
+    })
+    const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, hostStub(), tailnet))
+
+    await expect(handler('ssh.pin', { pinned: false }, signal())).resolves.toMatchObject({ ok: true })
+    expect(tailnet.applyPin).toHaveBeenCalledWith(false)
+    expect(settings.get().ssh).toEqual({ enabled: true })
+  })
+
+  it('keeps the pinned port when SSH is switched off and on', async () => {
+    const settings = settingsBinding({ serverUrl: 'http://127.0.0.1:8080', ssh: { enabled: true, pinnedPort: 51234 } })
+    const tailnet = tailnetStub({ snapshot: tailnetSnapshot() })
+    const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, hostStub(), tailnet))
+
+    await expect(handler('ssh.set', { enabled: false }, signal())).resolves.toMatchObject({ ok: true })
+    expect(settings.get().ssh).toEqual({ enabled: false, pinnedPort: 51234 })
+
+    await expect(handler('ssh.set', { enabled: true }, signal())).resolves.toMatchObject({ ok: true })
+    expect(settings.get().ssh).toEqual({ enabled: true, pinnedPort: 51234 })
+    expect(tailnet.applySsh).toHaveBeenLastCalledWith({ enabled: true, pinnedPort: 51234 })
+  })
+
+  it('refuses to pin before the web port is known', async () => {
+    const settings = settingsBinding({ serverUrl: 'http://127.0.0.1:8080', ssh: { enabled: true } })
+    const tailnet = tailnetStub({ snapshot: tailnetSnapshot() })
+    const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, hostStub(), tailnet))
+
+    await expect(handler('ssh.pin', { pinned: true }, signal()))
+      .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'TAILNET_NO_WEB_PORT' } } })
+    await expect(handler('ssh.pin', { pinned: 'yes' }, signal()))
+      .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'INVALID_MESSAGE' } } })
+    expect(tailnet.applyPin).not.toHaveBeenCalled()
+  })
+})
+
 describe('PluginControlRuntime relay service', () => {
   it('turns the relay service off without revoking the device and persists the switch', async () => {
     const settings = settingsBinding({ serverUrl: 'https://relay.example.test' })
@@ -178,6 +257,15 @@ describe('PluginControlRuntime relay service', () => {
     const noHost = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, undefined))
     await expect(noHost('service.set', { enabled: true }, signal()))
       .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'METHOD_NOT_ALLOWED' } } })
+  })
+
+  it('refuses to enable the relay service while the embedded node is off', async () => {
+    const settings = settingsBinding({ serverUrl: 'http://127.0.0.1:8080', tailnet: { enabled: false } })
+    const handler = register(new PluginControlRuntime(resolveConfig(settings.get()), settings, hostStub(), tailnetStub({ snapshot: tailnetSnapshot() })))
+
+    await expect(handler('service.set', { enabled: true }, signal()))
+      .resolves.toMatchObject({ ok: false, error: { details: { remoteCode: 'TAILNET_DISABLED' } } })
+    expect(settings.get().service?.enabled).not.toBe(false)
   })
 
   it('starts the embedded node and resumes Host control once the relay is ready', async () => {
@@ -433,7 +521,7 @@ function hostStub(overrides: Partial<HostControl> = {}): HostControl {
   }
 }
 
-function tailnetSnapshot(): TailnetSnapshot {
+function tailnetSnapshot(overrides: Partial<TailnetSnapshot> = {}): TailnetSnapshot {
   return {
     enabled: true,
     phase: 'ready',
@@ -447,6 +535,7 @@ function tailnetSnapshot(): TailnetSnapshot {
       authorize: { ok: true, detail: 'authorized' },
     },
     updatedAt: '2026-01-01T00:00:00.000Z',
+    ...overrides,
   }
 }
 
@@ -467,6 +556,7 @@ function tailnetStub(options: {
     reportAuthorized: vi.fn(),
     reportAuthorizeFailure: vi.fn(),
     applySsh: vi.fn(async () => options.snapshot),
+    applyPin: vi.fn(async () => options.snapshot),
     applyService: vi.fn(async () => options.snapshot),
   }
 }

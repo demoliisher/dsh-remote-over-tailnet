@@ -38,7 +38,7 @@
     "public.d.ts",
     "README.md",
     "icon.png",
-    "tsnet"
+    "tsnet/wasm_exec.js"
   ],
   "dsh": {
     "bundle": {

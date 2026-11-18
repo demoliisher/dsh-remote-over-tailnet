@@ -16,22 +16,47 @@ export interface TailnetStepView {
   detail: string
 }
 
-/** Host 侧内嵌节点与内置中继的状态快照（不含密码）。 */
+/** 系统 Tailscale 客户端的安装与登录状态（视图）。 */
+export interface SystemTailscaleView {
+  state: 'not-installed' | 'not-logged-in' | 'stopped' | 'running'
+  version?: string
+  dnsName?: string
+  ipv4?: string
+  authUrl?: string
+  detail?: string
+}
+
+/** wasm 扩展组件的下载状态（视图）。 */
+export interface ExtensionView {
+  state: 'absent' | 'downloading' | 'installed' | 'error'
+  size?: number
+  progress?: number
+  error?: string
+}
+
+/** Host 侧节点与内置中继的状态快照（不含密码）。 */
 export interface TailnetView {
   enabled: boolean
+  mode: 'system' | 'embedded'
   phase: 'disabled' | 'probing' | 'starting' | 'auth-required' | 'ready' | 'error'
   dnsName?: string
   /** 节点的 tailnet IPv4 地址；面板可切换按域名或按 IP 呈现。 */
   ipv4?: string
   publicUrl?: string
+  /** 对外中继端口：system 为 8080，embedded 为 80。 */
+  publicPort: number
   relayPort?: number
   relayPid?: number
   /** 节点尚未登录时交给用户点击的 Tailscale 授权链接。 */
   authUrl?: string
   account?: string
   logPath?: string
-  /** SSH 模式：tailnet 上的监听端口与主机密钥指纹；未启用时不存在。 */
-  ssh?: { port: number; fingerprint: string; webPort: number }
+  /** 当前 DSH Web 端口；面板用它显示客户端要填的端口。 */
+  webPort?: number
+  system?: SystemTailscaleView
+  extension: ExtensionView
+  /** SSH 模式：tailnet 上的监听端口、主机密钥指纹、转发目标端口与已固定端口；未启用时不存在。 */
+  ssh?: { port: number; fingerprint: string; webPort: number; pinnedPort?: number }
   steps: {
     node: TailnetStepView
     relay: TailnetStepView
@@ -108,8 +133,8 @@ export interface PluginSettings {
   terminal?: { enabled?: boolean }
   sidebar?: { entry?: SidebarEntryStyle }
   service?: { enabled?: boolean }
-  tailnet?: { enabled?: boolean; dataDirectory?: string; authKey?: string }
-  ssh?: { enabled?: boolean }
+  tailnet?: { enabled?: boolean; mode?: 'system' | 'embedded'; dataDirectory?: string; authKey?: string }
+  ssh?: { enabled?: boolean; pinnedPort?: number }
 }
 
 export interface PluginSettingsView {

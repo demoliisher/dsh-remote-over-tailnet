@@ -155,16 +155,11 @@ describe('SSH 服务', () => {
     client.end()
   })
 
-  // 回归：Desktop 每次启动都是随机端口，客户端里的「远端 DSH 端口」不能因此失效，
-  // 所以请求里的端口一律忽略，一律拨服务端记录的当前 DSH 端口。
-  it('忽略客户端请求的端口，一律拨当前 DSH 端口', async () => {
+  // 回归：客户端填的端口与服务端认定的端口不一致就拒绝，这条隧道不能拿去访问别的本机端口。
+  it('拒绝转发到面板端口之外的目标端口', async () => {
     const harness = await startHarness()
     const client = await connect(harness.bridgePort, ACCOUNT, PASSWORD)
-    const channel = await forward(client, harness.echoPort + 1)
-    const echoed = read(channel, 'ping')
-    channel.write('ping')
-    await expect(echoed).resolves.toBe('ping')
-    channel.end()
+    await expect(forward(client, harness.echoPort + 1)).rejects.toThrow(/Channel open failure/)
     client.end()
   })
 })

@@ -21,6 +21,11 @@ export interface Config {
    */
   tailnet?: {
     enabled?: boolean
+    /**
+     * 组网模式：system 使用本机已装并已登录的 Tailscale 客户端，embedded 使用按需下载的 wasm 节点。
+     * 默认 system；未安装 wasm 组件时 UI 不呈现 embedded 选项。
+     */
+    mode?: 'system' | 'embedded'
     /** 中继状态、日志与账号密码所在目录；默认在插件数据目录下的 tailnet 子目录。 */
     dataDirectory?: string
     /** 预先在管理台申请好的节点授权密钥；留空时首次启动给出授权链接。 */
@@ -32,8 +37,11 @@ export interface Config {
    */
   ssh?: {
     enabled?: boolean
-    /** tailnet 上的监听端口，与中继的 80 端口分开；默认 22，DSH Go 不用改端口。 */
-    port?: number
+    /**
+     * 面板上固定的 DSH 端口。固定之后客户端一直连它；实例下次启动换了端口，由插件在本机
+     * 反向代理过去。留空表示不固定，客户端要填当前实例的端口。
+     */
+    pinnedPort?: number
   }
   forceRelay?: boolean
   /**
@@ -80,10 +88,11 @@ export interface ResolvedCodexConfig {
   loopback: { ports: number[] }
   tailnet: {
     enabled: boolean
+    mode: 'system' | 'embedded'
     dataDirectory?: string
     authKey?: string
   }
-  ssh: { enabled: boolean }
+  ssh: { enabled: boolean; pinnedPort?: number }
   codex: ResolvedCodexConfig
 }
 
@@ -109,8 +118,8 @@ export const entryConfigSchema = s.object({
   sidebar: s.object({ entry: s.union(['standard', 'compact'] as const) }),
   service: s.object({ enabled: s.boolean() }),
   loopback: s.object({ ports: s.array(s.number()) }),
-  tailnet: s.object({ enabled: s.boolean(), dataDirectory: s.string(), authKey: s.string() }),
-  ssh: s.object({ enabled: s.boolean() }),
+  tailnet: s.object({ enabled: s.boolean(), mode: s.union(['system', 'embedded'] as const), dataDirectory: s.string(), authKey: s.string() }),
+  ssh: s.object({ enabled: s.boolean(), pinnedPort: s.number() }),
   forceRelay: s.boolean(),
   rotatePinnedPeerKey: s.boolean(),
   logLevel: s.union(['debug', 'info', 'warn', 'error'] as const),
@@ -162,10 +171,14 @@ const configSchema = z.object({
   loopback: z.object({ ports: z.array(z.number().int().min(1024).max(65535)).max(16).optional() }).strict().optional(),
   tailnet: z.object({
     enabled: z.boolean().optional(),
+    mode: z.enum(['system', 'embedded']).optional(),
     dataDirectory: z.string().trim().min(1).max(4096).optional(),
     authKey: z.string().trim().min(1).max(512).optional(),
   }).strict().optional(),
-  ssh: z.object({ enabled: z.boolean().optional() }).strict().optional(),
+  ssh: z.object({
+    enabled: z.boolean().optional(),
+    pinnedPort: z.number().int().min(1).max(65535).optional(),
+  }).strict().optional(),
   forceRelay: z.boolean().optional(),
   rotatePinnedPeerKey: z.boolean().optional(),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']).optional(),
@@ -190,16 +203,20 @@ export function resolveConfig(input: ConfigInput = {}, env: NodeJS.ProcessEnv = 
     enabled: parsed.enabled ?? true,
     ...(serverUrl === undefined ? {} : { serverUrl }),
     deviceName: parsed.deviceName ?? env.DSH_REMOTE_DEVICE_NAME ?? hostname(),
-    service: { enabled: parsed.service?.enabled ?? true },
+    service: { enabled: parsed.service?.enabled ?? false },
     terminal: { enabled: parsed.terminal?.enabled ?? (env.DSH_REMOTE_TERMINAL_ENABLED === undefined || env.DSH_REMOTE_TERMINAL_ENABLED === 'true') },
     sidebar: { entry: parsed.sidebar?.entry === 'compact' ? 'compact' : 'standard' },
     loopback: { ports: [...new Set(parsed.loopback?.ports ?? [])] },
     tailnet: {
       enabled: parsed.tailnet?.enabled ?? true,
+      mode: parsed.tailnet?.mode === 'embedded' ? 'embedded' : 'system',
       ...(parsed.tailnet?.dataDirectory === undefined ? {} : { dataDirectory: parsed.tailnet.dataDirectory }),
       ...(parsed.tailnet?.authKey === undefined ? {} : { authKey: parsed.tailnet.authKey }),
     },
-    ssh: { enabled: parsed.ssh?.enabled ?? false },
+    ssh: {
+      enabled: parsed.ssh?.enabled ?? false,
+      ...(parsed.ssh?.pinnedPort === undefined ? {} : { pinnedPort: parsed.ssh.pinnedPort }),
+    },
     forceRelay: parsed.forceRelay ?? false,
     rotatePinnedPeerKey: parsed.rotatePinnedPeerKey ?? false,
     logLevel: parsed.logLevel ?? 'info',

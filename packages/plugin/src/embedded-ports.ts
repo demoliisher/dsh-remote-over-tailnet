@@ -10,3 +10,9 @@ export const TAILNET_LISTEN_PORT = 80
 
 /** SSH 直连端口：DSH Go 里「添加 SSH 主机」的默认端口。 */
 export const SSH_LISTEN_PORT = 22
+
+/** 系统 Tailscale 模式的中继对外端口，避开 80 等系统端口。 */
+export const SYSTEM_RELAY_PORT = 8080
+
+/** 系统 Tailscale 模式的 SSH 对外端口，避开 22 等系统端口。 */
+export const SYSTEM_SSH_PORT = 2222

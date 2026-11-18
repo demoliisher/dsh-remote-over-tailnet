@@ -5,7 +5,7 @@ describe('plugin config', () => {
   it('applies safe defaults', () => {
     expect(resolveConfig({}, {})).toMatchObject({
       enabled: true,
-      service: { enabled: true },
+      service: { enabled: false },
       terminal: { enabled: true },
       sidebar: { entry: 'standard' },
       loopback: { ports: [] },
@@ -25,14 +25,20 @@ describe('plugin config', () => {
     expect(resolveConfig({ ssh: { enabled: true } }).ssh).toEqual({ enabled: true })
   })
 
+  it('keeps the pinned DSH port and rejects values outside the port range', () => {
+    expect(resolveConfig({ ssh: { enabled: true, pinnedPort: 51234 } }).ssh).toEqual({ enabled: true, pinnedPort: 51234 })
+    expect(() => resolveConfig({ ssh: { enabled: true, pinnedPort: 0 } })).toThrow()
+    expect(() => resolveConfig({ ssh: { enabled: true, pinnedPort: 70000 } })).toThrow()
+  })
+
   it('rejects the removed Client-mode role and Remote Tools switches', () => {
     expect(() => resolveConfig({ role: 'client' } as never, {})).toThrow()
     expect(() => resolveConfig({ remoteTools: { enabled: false } } as never, {})).toThrow()
   })
 
-  it('keeps Host control enabled by default while allowing an explicit opt-out', () => {
-    expect(resolveConfig({}, {}).service.enabled).toBe(true)
-    expect(resolveConfig({ service: { enabled: false } }, {}).service.enabled).toBe(false)
+  it('keeps Host control disabled by default while allowing an explicit opt-in', () => {
+    expect(resolveConfig({}, {}).service.enabled).toBe(false)
+    expect(resolveConfig({ service: { enabled: true } }, {}).service.enabled).toBe(true)
   })
 
   it('normalizes the loopback port list and the sidebar entry', () => {

@@ -14,7 +14,7 @@ export interface SshServerOptions {
   account: () => string
   /** 与 DSH Remote 共用的登录密码；改密码后认证立刻使用新值。 */
   password: () => string
-  /** 允许转发的本机端口，即当前 DSH Web 端口；随实例重启变化，所以每次连接现取。 */
+  /** 允许转发的本机端口：固定端口时是本机代理，未固定时是当前 DSH Web 端口。 */
   targetPort: () => number | undefined
   logger: SafeLogger
 }
@@ -73,10 +73,9 @@ function sameSecret(expected: string, actual: string): boolean {
 /**
  * 启动进程内 SSH 服务。
  *
- * 服务端只接受密码认证，认证通过后只放行 direct-tcpip 通道，目标固定是 127.0.0.1 上的
- * 当前 DSH Web 端口。客户端请求里的目标地址与端口一律忽略，因此 Desktop 每次启动换随机
- * 端口，客户端里的那一栏也不用跟着改。session、sftp、agent 转发等通道全部拒绝，这条 SSH
- * 能做的事被限制在「替 DSH Go 打通到这一个实例的隧道」。
+ * 服务端只接受密码认证，认证通过后只放行 direct-tcpip 通道，且目标必须是面板上显示的
+ * DSH 端口。请求里的地址与端口对不上就拒绝，这条 SSH 能做的事被限制在「替 DSH Go
+ * 打通到这一个实例的隧道」。session、sftp、agent 转发等通道全部拒绝。
  */
 export async function startSshServer(options: SshServerOptions): Promise<SshServerHandle> {
   const material = await loadMaterial(options.directory)
@@ -106,13 +105,12 @@ export async function startSshServer(options: SshServerOptions): Promise<SshServ
     })
     client.on('tcpip', (accept, reject, info) => {
       const target = options.targetPort()
-      if (target === undefined) {
+      // 只放行面板上显示的那个端口：固定端口时它是本机代理，未固定时它就是当前 DSH 实例。
+      if (target === undefined || info.destPort !== target) {
         reject()
         return
       }
-      // 拨号目标只由服务端决定：客户端在「远端 DSH 端口」里填什么都落到当前的 DSH Web 端口，
-      // 请求里的 destIP 与 destPort 只写进调试日志，不参与拨号。
-      options.logger.debug('ssh tunnel opened', { requestedPort: info.destPort, port: target })
+      options.logger.debug('ssh tunnel opened', { port: target })
       const channel = accept()
       const upstream = net.connect({ host: '127.0.0.1', port: target })
       upstream.setNoDelay(true)
